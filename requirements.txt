@@ -1,0 +1,40 @@
+# requirements.txt: the packages this project asks for.
+#
+# HOW TO BUILD THE ENVIRONMENT (once, inside the project folder)
+#
+# In VS Code, the easy way:
+#   1. File > Open Folder, and choose the project folder.
+#   2. Ctrl+Shift+P (Cmd+Shift+P on a Mac) > Python: Create Environment > Venv
+#      > Python 3.13 > tick requirements.txt > OK.
+#   3. Wait a few minutes. A folder called .venv appears, and VS Code uses it.
+# In a terminal, do the same thing by hand:
+#   Windows:        python -m venv .venv
+#                   .venv\Scripts\activate
+#   Mac and Linux:  python3 -m venv .venv
+#                   source .venv/bin/activate
+#   Then, with (.venv) at the start of the line:
+#                   python -m pip install -r requirements.txt
+#
+# AFTERWARDS
+#   Check it:       python -c "import pandas, sklearn, ydata_profiling, jupytext"
+#   Save what was really installed, with exact versions:
+#                   python -m pip freeze > requirements-installed.txt
+#   A new package:  add its name at the end of this file, then run the
+#                   pip install line again. Commit this file.
+#   It broke:       delete the .venv folder and build it again. Nothing is lost:
+#                   .venv holds none of your work, and Git ignores it.
+#   Never copy a .venv to another computer. Send this file instead.
+#
+# Lines that start with # are comments. pip skips them.
+
+pandas
+numpy
+scikit-learn
+matplotlib
+ydata-profiling
+# ydata-profiling still needs a piece that newer versions of setuptools removed:
+setuptools<81
+jupyter
+ipykernel
+jupytext
+black
