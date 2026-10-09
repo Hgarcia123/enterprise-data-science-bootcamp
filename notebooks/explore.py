@@ -43,6 +43,8 @@ df.head()
 # %%
 df["home_ownership"].value_counts(dropna=False)
 
+df.describe()
+
 # %% [markdown]
 # ## 3. Profile a sample
 # 5,000 rows are enough to see the problems, and the report is ready in under a minute.
