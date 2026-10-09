@@ -8,7 +8,7 @@ moves from a notebook into tested Python files.
 **Project scaffold:** Henrique Carreiro and João Azambuja, Enterprise Data Science
 Bootcamp, NOVA IMS, 2026-27
 
-**Maintainer:** write your name here
+**Maintainers:** Paulo Jorge, Sofia Cardoso e Henrique Garcia
 
 ## What is in this folder
 
