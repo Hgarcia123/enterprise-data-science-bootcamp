@@ -30,6 +30,7 @@
 pandas
 numpy
 scikit-learn
+seaborn
 matplotlib
 ydata-profiling
 # ydata-profiling still needs a piece that newer versions of setuptools removed:
