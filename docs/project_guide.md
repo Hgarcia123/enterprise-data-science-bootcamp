@@ -67,10 +67,17 @@ At the moment of hospital discharge, estimate the risk that a diabetic patient i
 
 Do one step per session. Each step ends with a short written note (2–3 bullets) in your notebook, so the Week 9 report and the slides write themselves.
 
-- [ ] **Step 1 — Load & sanity check.** Load with the fix above, confirm 101,766 × 50, value counts for your columns. Commit on `Paulo_EDA`.
-- [ ] **Step 2 — Profile your block.** `ydata-profiling` on your columns + `readmitted` only. Note zero-variance / high-imbalance alerts.
-- [ ] **Step 3 — Drop list.** Write down which columns you drop and *why* (thresholds), so you can defend it.
-- [ ] **Step 4 — Medication vs target.** For each kept drug: <30 readmission rate by No/Steady/Up/Down. One bar chart (IBCS style) per finding worth keeping.
+- [x] **Step 1 — Load & sanity check.** Done 18 Oct — 101,766 × 50, no missing values in the 23 drug columns.
+- [x] **Step 2 — Profile your block.** Done 18 Oct — 2 constant columns; imbalance flagged on every drug except insulin (too broad to act on); 1.2% "duplicates" are an artefact of profiling a column subset.
+- [x] **Step 3 — Drop list.** Done 19 Oct — rule: keep if ≥1% of encounters take it (≥1,018).
+  - `MED_KEEP` (8): insulin, metformin, glipizide, glyburide, pioglitazone, rosiglitazone, glimepiride, repaglinide.
+  - `MED_DROP` (15): 13 rare + `examide`, `citoglipton` (constant). Rare drugs can still feed a "number of other diabetes drugs" count feature in Step 5.
+  - Defence: natural gap between repaglinide (1,539) and the next drug (706); dropped drugs cover <2% of encounters combined.
+- [x] **Step 4 — Medication vs target.** Done 1 Nov — chi-square per drug, Bonferroni p < 0.0063, Wilson 95% CIs.
+  - Insulin strongest (p = 4e-41): <30 rate 10.0% No → 11.1% Steady → 13.0% Up → 13.9% Down.
+  - Metformin lower when taken (Steady 9.7%, Up 8.2% vs No 11.5%) — likely confounding (withheld from sicker patients), not protective.
+  - Other 6 drugs not significant after Bonferroni; kept as columns, no chart.
+  - Sensitivity: without expired/hospice discharges (2,423 rows), patterns hold; insulin rates +0.2–0.3 pp, metformin users barely move.
 - [ ] **Step 5 — Engineered features (draft).** `n_meds_taken`, `n_dose_changes` (Up+Down), `insulin_status`, maybe `any_oral_agent`. Check their <30 rates too.
 - [ ] **Step 6 — Hand-off.** Reusable function(s) in `/src` (e.g. `src/features/medications.py`) with docstrings, PR for review.
 
