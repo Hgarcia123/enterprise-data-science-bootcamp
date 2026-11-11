@@ -137,11 +137,20 @@ CATEGORICAL = [
     "metformin-pioglitazone",
     "change",
     "diabetesMed",
-    "readmitted"
 ]
 
 df_diabetes.head()
 
+# %% 
+
+#Create dataframe with only the target variable
+df_target = pd.DataFrame(df_diabetes["readmitted"])
+
+#Remove target variable from df_diabetes dataframe
+df_diabetes.drop(columns="readmitted", inplace=True)
+
+
+df_target.head()
 
 # %% [markdown] id="67b140e8"
 # ## IDS Mapping Tables
@@ -600,7 +609,7 @@ for col in text_cols:
     df_my_data_encod[col] = le.fit_transform(df_my_data_encod[col])
 
 # Add the target as 0/1 to see each variable's link with early readmission
-df_my_data_encod["early_readmit"] = (df_diabetes["readmitted"] == "<30").astype(int)
+df_my_data_encod["early_readmit"] = (df_target["readmitted"] == "<30").astype(int)
 
 # Plot heatmap using spearman correlation
 plt.figure(figsize=(10, 8))
@@ -1005,7 +1014,7 @@ drug_usage.drop(columns="n_levels").style.format({"% taking": "{:.2f}"})
 # Profile report for the medication block (23 drug columns + target only;
 # a report on all 50 columns is too heavy to read for this block)
 create_profile_report(
-    df_diabetes[drug_cols + ["readmitted"]],
+    df_diabetes[drug_cols].join(df_target),
     "Diabetes - Medications Profile Report",
     "profile-report-diabetes-medications.html",
 )
@@ -1029,7 +1038,7 @@ plt.close("all")
 
 # %%
 # Early readmission flag (readmitted is not modified)
-early_readmit = (df_diabetes["readmitted"] == "<30").astype(int)
+early_readmit = (df_target["readmitted"] == "<30").astype(int)
 BASE_RATE = early_readmit.mean()
 ALPHA = 0.05
 LEVELS = ["No", "Steady", "Up", "Down"]
