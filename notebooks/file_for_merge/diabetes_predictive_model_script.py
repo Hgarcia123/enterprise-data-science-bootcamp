@@ -786,7 +786,6 @@ plt.show()
 util_stay_cols = [
     "num_lab_procedures",
     "num_procedures",
-    "number_diagnoses",
     "num_medications",
     "number_outpatient",
     "number_emergency",
@@ -827,28 +826,31 @@ for col in df_util_stay_data.columns:
 
     print(f"{col}: \tMean Val: {mean_val} \tStandard Deviation: {std_val} \tIQR Val: {iqr_val}")
 
-#Plot distribution in bar charts
-fig, axes = plt.subplots(2, 4, figsize=(16, 10))
 
 #Create bins dict
 bins_dict = {
     "num_lab_procedures": 15,
     "num_procedures": 20,
     "num_medications": 20,
-    "number_diagnoses": 10,
     "number_outpatient": 5,
     "number_emergency": 5,
     "number_inpatient": 50,
     "time_in_hospital": 10,
 }
 
-for ax, col in zip(axes.flatten(), df_util_stay_data.columns):
-    sns.histplot(df_util_stay_data, x=col, ax=ax, bins=bins_dict[col], kde=True)
-    ax.set_title(f"Distribution of {col}", fontsize=10)
-    ax.set_xlabel('')
+def distro_plot_util_stay_data():
+    #Plot distribution in bar charts
+    fig, axes = plt.subplots(2, 4, figsize=(16, 10))
 
-plt.tight_layout()
-plt.show()
+    for ax, col in zip(axes.flatten(), df_util_stay_data.columns):
+        sns.histplot(df_util_stay_data, x=col, ax=ax, bins=bins_dict[col], kde=True)
+        ax.set_title(f"Distribution of {col}", fontsize=10)
+        ax.set_xlabel('')
+
+    plt.tight_layout()
+    plt.show()
+
+distro_plot_util_stay_data()
 
 # %% [markdown] id="98e546df"
 # **Conclusion:** Looking at the distribution plots (TBD)
@@ -882,12 +884,15 @@ plt.show()
 # Build plot
 plt.figure(figsize=(6, 5))
 
+#Create temp df Join 'num_diagnoses' column since this has potentital to have some correlation with the variables being analyzed
+df_util_stay_data_temp = df_util_stay_data.join(df_diabetes['number_diagnoses'])
+
 #Scale values using min-max scaling to improve correlation visualization
 scaler = MinMaxScaler()
 df_corr_analysis = pd.DataFrame(
-    scaler.fit_transform(df_util_stay_data),
-    columns=df_util_stay_data.columns,
-    index=df_util_stay_data.index,
+    scaler.fit_transform(df_util_stay_data_temp),
+    columns=df_util_stay_data_temp.columns,
+    index=df_util_stay_data_temp.index,
 )
 
 # Plot heatmap using spearman correlation
@@ -906,31 +911,8 @@ plt.title("Correlation Analysis - Utilization and Current Stay Data", fontsize=1
 plt.tight_layout()
 plt.show()
 
-# %% [markdown] id="85903b34"
-# ### Correlation (without outliers)
-# Remove outliers from dataframe and quickly check if correlation is more relevant
-
-# %% id="e99bcc0d"
-#Upper trimm data in order to remove outliers
-df_util_outliers = df_util_stay_data.copy()
-
-cutoffs = {}
-
-for c in df_util_outliers.columns:
-    q1, q3 = df_util_outliers[c].quantile([0.25, 0.75])
-    cutoffs[c] = df_util_outliers[c].quantile(0.90)
-
-mask = pd.concat([df_util_outliers[c] <= cutoffs[c] for c in df_util_outliers.columns], axis=1).all(axis=1)
-clean = df_util_outliers.loc[mask, df_util_outliers.columns]
-
-corr = clean.corr(method = 'spearman')
-sns.heatmap(corr, annot=True, fmt=".2f", cmap="coolwarm", vmin=-1, vmax=1, square=True)
-plt.title("Correlation matrix (upper outliers removed)")
-plt.show()
-
 # %% [markdown] id="57d0ce48"
-# **Conclusion:** Very similar correlation heatmap compared to the one with outliers, being the only difference where the correlation of medications and lab procedures dropped by about in half
-#
+# **Conclusion:**
 # Ultimately, we can conclude that, in general, these columns aren't very correlated or similar in anyway.
 #
 # There is some correlation regarding the number of medications, where the higher the lab procedures, normal procedures and time spent in hospital are, the higher the number of medication is prescribed, which makes total sense.
@@ -1465,11 +1447,88 @@ print(f"\nMedical Specialty: \n\n{value_summary(df_admin_data_pre, "medical_spec
 # Correlation of these variables with other ones is very weak, even when checking the profile report with all other variables. So using methods like K-Nearest Neighbor to recover data based on other data is **not viable**.  
 # Even using methods to fill missing values with the most repeated value doesn't seem worth it since it could infer bias on the model.  
 #
-# **For now, do not recover null values. Miight change later after training model.**
+# **For now, do not recover null values. Might change later after training model.**
 #
 # Payer Code and Medical Specialty have a high Unknown/Null value rate, 39% and 49% respectively, so these columns **might not be included in the model.**
 
 # %% [markdown]
 # ## Utilization History/Current Stay Data
 
+
+
+# %% [markdown]
+### Outliers
+# Handling outliers in this dataset is highly dependent on the model that will be used.
+# If using a model that is sensitive to outliers (Distance based), like linear regression, we should remove them. 
+# If using a model like Random Forest, we can keep them since the model is not sensitive to outliers.
+# So I'll prepare a function that removes outliers based on the 99th percentile of selected columns in an array, and we can use it if needed. 
 # %%
+
+def winsorize_upper(df: pd.DataFrame, cols: list, percentile: float, cutoffs: dict | None = None):
+    """Cap values above the percentile. Returns (capped_df, cutoffs)."""
+    df = df.copy()
+    if cutoffs is None:
+        cutoffs = {c: df[c].quantile(percentile) for c in cols}
+    for c in cols:
+        df[c] = df[c].clip(upper=cutoffs[c])
+
+    #Check where cutoffs were performed
+    print(f"Cutoffs applied at {percentile * 100:.0f}th percentile:")
+    for cutoff in cutoffs:
+        print(f"{cutoff}: {cutoffs[cutoff]}")
+
+    return df
+
+cols_remove_outliers = [
+    "number_outpatient",
+    "number_emergency",
+    "number_inpatient",
+    "num_lab_procedures",
+    "num_medications"
+]
+
+df_util_stay_data = winsorize_upper(df_util_stay_data, cols_remove_outliers, 0.99)
+# %%
+distro_plot_util_stay_data()
+#%% [markdown]
+### Scaling
+# If using a model that is based on distance we should scale the data. For now, I'll prepare a function that scales the selected columns in an array using MinMaxScaler. We can use it if needed.
+
+# %%
+
+def scale_columns(df: pd.DataFrame, cols: list = None, scaler: MinMaxScaler = None):
+    """Scale selected columns with MinMaxScaler.
+    Returns (scaled_df, fitted_scaler). Pass a fitted scaler to reuse it on test data."""
+    df = df.copy()
+    if cols is None:
+        cols = df.columns.tolist()
+    if scaler is None:
+        scaler = MinMaxScaler()
+        df[cols] = scaler.fit_transform(df[cols])
+    else:
+        df[cols] = scaler.transform(df[cols])
+    return df
+
+#USE SCALING FUNCTION AS NEEDED
+# df_util_stay_data_scaled = scale_columns(df_util_stay_data, cols_remove_outliers)
+
+# %% [markdown]
+### Feature Columns
+# Let's create a few features that might be useful for the model. 
+
+# %% [markdown]
+# 1. Total Prior Visits - Sum all prior visits (outpatient, emergency, inpatient) into a single feature. This will help the model understand the patient's utilization history better.
+# total_prior_visits = number_outpatient + number_emergency + number_inpatient
+
+#%%
+df_util_stay_data["total_prior_visits"] = df_util_stay_data[["number_outpatient", "number_emergency", "number_inpatient"]].sum(axis=1)
+
+#%% [markdown]
+# 2. Rate of Lab Procedures per days in hospital - This feature will help the model understand how many lab procedures are performed per day of hospital stay. This might be useful to understand the severity of the patient's condition.
+# %%
+df_util_stay_data["lab_procedures_per_day"] = df_util_stay_data["num_lab_procedures"] / df_util_stay_data["time_in_hospital"]
+
+#%% [markdown]
+# 3. Is prior inpatient - This feature will help the model understand if the patient has been admitted to the hospital before. Once again, this might be useful to understand the severity of the patient's condition.
+#%%
+df_util_stay_data["is_prior_inpatient"] = (df_util_stay_data["number_inpatient"] > 0).astype(int)
