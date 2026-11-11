@@ -765,6 +765,12 @@ plt.title("Correlation Analysis - Administrative Data", fontsize=16)
 plt.tight_layout()
 plt.show()
 
+# %% [markdown] id="90d79e30"
+# **Conclusion:**
+# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Worth checking for redundancy before modelling.
+# - `age` and `number_diagnoses` are moderately correlated (approximately 0.20): older patients tend to have more diagnoses recorded.
+# - All variables show very weak linear correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
+
 # %% [markdown] id="4946495e"
 # Let's check for correlation between columns that have similar meaning using qui-square:  
 # - admission_type_id <-> admission_source_id
