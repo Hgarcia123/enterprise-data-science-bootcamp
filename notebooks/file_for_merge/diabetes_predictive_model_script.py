@@ -5,21 +5,34 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.19.6
+#       jupytext_version: 1.19.5
 #   kernelspec:
-#     display_name: .venv
+#     display_name: .venv (3.13.15)
 #     language: python
 #     name: python3
 # ---
 
+# %% [markdown]
+# # EDSA - Enterprise Data Science Bootcamp - Group Project 2026
+
+# %% [markdown]
+# # **Predicting Early Hospital Readmission of Diabetic Patients**
+
+# %% [markdown]
+# Henrique Garcia (20251984), Paulo Tavares (20250301), Sofia Cardoso (20250311) | Group 09
+
 # %% [markdown] id="1750205f"
-# # Introduction (TBD)
+# ## Introduction (TBD)
+#
+# Introduction\
+# • Overview and main goals of the project.\
+# • Description of the overall process and identification of model assessment approach adopted in the work
 
 # %% [markdown] id="a819a16a"
-# # Libraries and Global Variables
+# # Library Imports and Global Variables
 
 # %% id="4d7953e8"
-#Data Analysis and manupalation libraries
+# Data Analysis and manupalation libraries
 import pandas as pd
 import numpy as np
 from ydata_profiling import ProfileReport
@@ -46,7 +59,6 @@ GENERATED_REPORTS = (PROJECT / "reports" / "generated")
 
 DIABETES_CSV = PROJECT / "data" / "raw" / "diabetic_data.csv"
 IDS_MAPING_CSV = PROJECT / "data" / "raw" / "IDS_mapping.csv"
-
 
 # %% [markdown]
 # # Utils
@@ -79,9 +91,12 @@ def value_summary(df:pd.DataFrame, col=None):
 # Read diabetes CSV
 df_diabetes = pd.read_csv(
     DIABETES_CSV, delimiter=",", na_values="?", keep_default_na=False, low_memory=False
-).set_index("encounter_id")
+)).set_index("encounter_id")
 
-#CATEGORIZE VARIABLES
+df_diabetes.head()
+
+
+# CATEGORIZE VARIABLES
 
 ## NUMERIC
 NUMERIC = [
@@ -97,7 +112,7 @@ NUMERIC = [
     "number_outpatient",
     "number_emergency",
     "number_inpatient",
-    "number_diagnoses"
+    "number_diagnoses",
 ]
 
 CATEGORICAL = [
@@ -140,8 +155,6 @@ CATEGORICAL = [
     "readmitted"
 ]
 
-df_diabetes.head()
-
 
 # %% [markdown] id="67b140e8"
 # ## IDS Mapping Tables
@@ -149,47 +162,54 @@ df_diabetes.head()
 
 # %% id="30113aee"
 def process_ids_tables():
-    #Read IDS mapping CSV
-    df_ids_map = pd.read_csv(IDS_MAPING_CSV, header=None, names=range(2), delimiter=',')
+    # Read IDS mapping CSV
+    df_ids_map = pd.read_csv(IDS_MAPING_CSV, header=None, names=range(2), delimiter=",")
 
-    #Define table names
-    table_names = ['admission_type', 'discharge_disposition_id', 'admission_source_id']
+    # Define table names
+    table_names = ["admission_type", "discharge_disposition_id", "admission_source_id"]
 
     groups = df_ids_map[0].isin(table_names).cumsum()
 
-    tables = {g.iloc[0,0]: g.iloc[0:-1] for k,g in df_ids_map.groupby(groups)}
+    tables = {g.iloc[0, 0]: g.iloc[0:-1] for k, g in df_ids_map.groupby(groups)}
 
     for name, table in tables.items():
-        #Create dataframe
+        # Create dataframe
         df = pd.DataFrame(table)
 
-        #Promote first line to header
+        # Promote first line to header
         df.columns = df.iloc[0]
         df = df.iloc[1:].reset_index(drop=True)
 
         yield df
 
+
 ids_mapping_dataframes = process_ids_tables()
 
-#Use generator to create our dataframes for each table
+# Use generator to create our dataframes for each table
 
-#Admission Types
+# Admission Types
 df_admission_type = next(ids_mapping_dataframes)
 
-#Cast admission_type_id to int for consistency with df_diabetes
-df_admission_type['admission_type_id'] = df_admission_type['admission_type_id'].astype(int)
+# Cast admission_type_id to int for consistency with df_diabetes
+df_admission_type["admission_type_id"] = df_admission_type["admission_type_id"].astype(
+    int
+)
 
-#Discharge Disposition
+# Discharge Disposition
 df_discharge_disposition = next(ids_mapping_dataframes)
 
-#Cast discharge_disposition_id to int for consistency with df_diabetes
-df_discharge_disposition['discharge_disposition_id'] = df_discharge_disposition['discharge_disposition_id'].astype(int)
+# Cast discharge_disposition_id to int for consistency with df_diabetes
+df_discharge_disposition["discharge_disposition_id"] = df_discharge_disposition[
+    "discharge_disposition_id"
+].astype(int)
 
-#Admission Source
+# Admission Source
 df_admission_source = next(ids_mapping_dataframes)
 
-#Cast admission_source_id to int for consistency with df_diabetes
-df_admission_source['admission_source_id'] = df_admission_source['admission_source_id'].astype(int)
+# Cast admission_source_id to int for consistency with df_diabetes
+df_admission_source["admission_source_id"] = df_admission_source[
+    "admission_source_id"
+].astype(int)
 
 # %% [markdown] id="13882095"
 # ### Admission Type mapping
@@ -231,9 +251,7 @@ df_admission_source[:n_rows]
 # %% id="d2fbf7bb"
 def create_profile_report(df, title, file_name):
 
-    profile = ProfileReport(
-        df, title = title
-    )
+    profile = ProfileReport(df, title=title)
     profile.config.html.inline = True
 
     path_to_html = Path(PROJECT / "reports" / "generated" / file_name)
@@ -241,11 +259,15 @@ def create_profile_report(df, title, file_name):
     if not path_to_html.exists():
         profile.to_file(GENERATED_REPORTS / file_name)
 
-#Create profile report for this dataframe
-create_profile_report(df_diabetes, "Diabetes Data Profile Report", "profile-report-diabetes.html")
 
-# %% [markdown] id="a64d6557"
-# ## Assigned Variables
+# Create profile report for this dataframe
+create_profile_report(
+    df_diabetes, "Diabetes Data Profile Report", "profile-report-diabetes.html"
+)
+
+# %%
+# Restore inline plotting (ydata_profiling switches matplotlib to a non-display backend)
+# %matplotlib inline
 
 # %% [markdown] id="eb051257"
 # | Group | Variables |
@@ -336,6 +358,7 @@ age_summary = pd.DataFrame(
 age_summary["%"] = (age_summary["Count"] / age_summary["Count"].sum() * 100).round(2)
 age_summary.style.hide(axis="index").format({"%": "{:.2f}"})
 
+# %% [markdown]
 # %% id="88fdbbdf"
 # Convert age bands to numbers (0–9)
 df_diabetes["age"] = df_diabetes["age"].cat.codes
@@ -465,15 +488,142 @@ df_diabetes["number_diagnoses"].value_counts().sort_index().to_frame().T
 # | `max_glu_serum` | Serum glucose test result (>200, >300, Norm, or not measured) |
 # | `A1Cresult` | HbA1c test result (>8, >7, Norm, or not measured) |
 
-# %% id="c4266e30"
+# %%
 # Preview the raw lab result values (first 10 rows)
 df_diabetes[["max_glu_serum", "A1Cresult"]].head(10).T
 
-# %% id="8a6153b8"
+# %%
 # Check lab result categories, including missing values ('None' = test not performed)
 df_diabetes[["max_glu_serum", "A1Cresult"]].apply(
     lambda s: s.value_counts(dropna=False)
 ).fillna(0).astype(int)
+
+# %% [markdown]
+# **Lab results decisions:**
+# - **max_glu_serum, A1Cresult:** missing values indicate that the test was not performed (approximately 95% and 83% of encounters, respectively). These were recoded as `Not measured` rather than imputed, since the absence of a test may itself be informative. Both variables were kept as categorical and will be encoded in the modelling pipeline.
+
+# %% [markdown]
+# ### Medication Summary
+#
+# | Variable | Description |
+# |---|---|
+# | `change` | Whether diabetes medication changed during the encounter (Ch / No) |
+# | `diabetesMed` | Whether any diabetes medication was prescribed (Yes / No) |
+
+# %%
+# Preview the raw medication summary values (first 10 rows)
+df_diabetes[["change", "diabetesMed"]].head(10).T
+
+# %%
+# Check medication summary categories, including missing values
+df_diabetes[["change", "diabetesMed"]].apply(
+    lambda s: s.value_counts(dropna=False)
+).fillna(0).astype(int)
+
+# %% [markdown]
+# **Medication summary decisions:**
+# - **change, diabetesMed:** both are binary variables with no missing values, recoded as 1/0 (Ch/Yes = 1, No = 0) so they can be used directly in the models.
+
+# %% [markdown]
+# # Data Preprocessing
+
+# %% [markdown]
+# ## Sociodemographic Variables
+
+# %% [markdown]
+# ### Handle missing values
+
+# %% id="eb44b91e"
+# Replace missing race with 'Unknown'
+df_diabetes["race"] = df_diabetes["race"].fillna("Unknown")
+df_diabetes["race"].value_counts()
+
+# %%
+# Rename 'Unknown/Invalid' to 'Unknown' for consistency
+df_diabetes["gender"] = df_diabetes["gender"].replace("Unknown/Invalid", "Unknown")
+df_diabetes["gender"].value_counts()
+
+# %% [markdown]
+# ### Encode age
+
+# %% id="836b0390"
+# Convert age into an ordered categorical variable
+df_diabetes["age"] = pd.Categorical(
+    df_diabetes["age"], categories=AGE_ORDER, ordered=True
+)
+
+# %% id="88fdbbdf"
+# Convert age bands to numbers (0–9)
+df_diabetes["age"] = df_diabetes["age"].cat.codes
+
+# %% id="48b076ba"
+# Verify that all age values matched one of the 10 age bands
+df_diabetes["age"].unique()
+
+# %% [markdown]
+# ### Create weight flag
+
+# %% id="622f2248"
+# Create a flag indicating whether weight was recorded (96.86% missing)
+df_diabetes["weight_recorded"] = df_diabetes["weight"].notna().astype(int)
+df_diabetes["weight_recorded"].value_counts()
+
+# %% id="5e861db1"
+# Summary table of the weight_recorded flag
+weight_summary = (
+    df_diabetes["weight_recorded"]
+    .value_counts()
+    .rename(index={0: "Not recorded (0)", 1: "Recorded (1)"})
+    .rename_axis("Weight")
+    .reset_index(name="Count")
+)
+weight_summary["%"] = weight_summary["Count"] / weight_summary["Count"].sum() * 100
+weight_summary.style.hide(axis="index").format({"%": "{:.0f}"})
+
+# %% id="89f8b9d7"
+# Drop the original weight column (replaced by weight_recorded flag)
+df_diabetes.drop(columns="weight", inplace=True)
+
+# %% [markdown]
+# ## Diagnoses
+
+# %% [markdown]
+# ### Reduce cardinality
+
+# %% id="07ab5c27"
+# Create grouped versions of the 3 diagnosis columns (raw codes are kept)
+for col in diag_cols:
+    df_diabetes[f"{col}_group"] = df_diabetes[col].apply(group_icd9)
+
+# %% id="af06d0e0"
+# Summary table of diagnosis groups (% of encounters)
+diag_summary = pd.DataFrame(
+    {
+        col: df_diabetes[f"{col}_group"].value_counts(normalize=True) * 100
+        for col in diag_cols
+    }
+)
+diag_summary.sort_values("diag_1", ascending=False).style.format("{:.1f}")
+
+# %%
+# Drop raw ICD-9 codes (replaced by the _group columns) and encounter_id (row key only)
+df_diabetes.drop(columns=["diag_1", "diag_2", "diag_3", "encounter_id"], inplace=True)
+
+# %% [markdown]
+# #### Handle Outliers
+
+# %%
+# Cap number_diagnoses at 10: values 10–16 become one group ("10+"), separate from 9
+df_diabetes["number_diagnoses"] = df_diabetes["number_diagnoses"].clip(upper=10)
+
+# Check number_diagnoses after the cap: 1–9 unchanged, 10–16 grouped as 10
+df_diabetes["number_diagnoses"].value_counts().sort_index()
+
+# %% [markdown]
+# ## Lab Results
+
+# %% [markdown]
+# ### Handle missing values
 
 # %% id="f73a850e"
 # Replace 'None' / missing lab results with 'Not measured' (the test was not performed)
@@ -482,7 +632,7 @@ for col in ["max_glu_serum", "A1Cresult"]:
         df_diabetes[col].replace("None", "Not measured").fillna("Not measured")
     )
 
-# %% id="a3bf5716"
+# %%
 # Check lab result categories after replacing missing values with 'Not measured'
 df_diabetes[["max_glu_serum", "A1Cresult"]].apply(
     lambda s: s.value_counts(dropna=False)
@@ -491,6 +641,10 @@ df_diabetes[["max_glu_serum", "A1Cresult"]].apply(
 # %% id="70f50299"
 # Percentage of encounters where each lab test was not performed
 ((df_diabetes[["max_glu_serum", "A1Cresult"]] == "Not measured").mean() * 100).round(1)
+
+# %% [markdown]
+# ## Medication Summary
+
 
 # %% [markdown] id="dd9b3ff1"
 # **Lab results decisions:**
@@ -514,6 +668,13 @@ df_diabetes[["change", "diabetesMed"]].apply(
     lambda s: s.value_counts(dropna=False)
 ).fillna(0).astype(int)
 
+# %% [markdown] id="6224e2ae"
+# **Medication summary decisions:**
+# - **change, diabetesMed:** both are binary variables with no missing values, recoded as 1/0 (Ch/Yes = 1, No = 0) so they can be used directly in the models.
+
+# %% [markdown]
+# ### Binary encoding
+
 # %% id="d823d0c8"
 # Convert change and diabetesMed into binary variables (1 = Ch/Yes, 0 = No)
 df_diabetes["change"] = df_diabetes["change"].map({"Ch": 1, "No": 0})
@@ -525,9 +686,8 @@ df_diabetes[["change", "diabetesMed"]].apply(
     lambda s: s.value_counts(dropna=False)
 ).fillna(0).astype(int)
 
-# %% [markdown] id="6224e2ae"
-# **Medication summary decisions:**
-# - **change, diabetesMed:** both are binary variables with no missing values, recoded as 1/0 (Ch/Yes = 1, No = 0) so they can be used directly in the models.
+# %% [markdown]
+# ## Distribution & Correlation (cleaned patient variables)
 
 # %% [markdown] id="0b6f28fd"
 # ### Distribution
@@ -620,9 +780,10 @@ plt.show()
 
 # %% [markdown]
 # **Conclusion:**
-# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Worth checking for redundancy before modelling.
+# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Both are kept: 0.51 is not high enough to call them redundant, and tree-based models handle correlated features well.
 # - `age` and `number_diagnoses` are moderately correlated (approximately 0.20): older patients tend to have more diagnoses recorded.
-# - All variables show very weak linear correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
+# - All variables show very weak monotonic correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
+# - Label encoding here is for exploration only. In modelling, nominal variables (race, diagnosis groups, lab results) will be one-hot encoded so no false order is introduced.
 
 # %% [markdown] id="2a61961b"
 # ## Administrative Data
@@ -765,11 +926,6 @@ plt.title("Correlation Analysis - Administrative Data", fontsize=16)
 plt.tight_layout()
 plt.show()
 
-# %% [markdown] id="90d79e30"
-# **Conclusion:**
-# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Worth checking for redundancy before modelling.
-# - `age` and `number_diagnoses` are moderately correlated (approximately 0.20): older patients tend to have more diagnoses recorded.
-# - All variables show very weak linear correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
 
 # %% [markdown] id="4946495e"
 # Let's check for correlation between columns that have similar meaning using qui-square:  
@@ -816,7 +972,7 @@ value_summary(df_util_stay_data)
 df_util_stay_data.columns
 
 # %% id="102cdf27"
-#Statistics of data
+# Statistics of data
 for col in df_util_stay_data.columns:
     data = df_util_stay_data[col]
 
