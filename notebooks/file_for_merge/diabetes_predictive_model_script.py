@@ -22,7 +22,7 @@
 # Henrique Garcia (20251984), Paulo Tavares (20250301), Sofia Cardoso (20250311) | Group 09
 
 # %% [markdown] id="1750205f"
-# ## Introduction (TBD)
+# # Introduction (TBD)
 #
 # Introduction\
 # • Overview and main goals of the project.\
@@ -91,9 +91,15 @@ def value_summary(df:pd.DataFrame, col=None):
 # Read diabetes CSV
 df_diabetes = pd.read_csv(
     DIABETES_CSV, delimiter=",", na_values="?", keep_default_na=False, low_memory=False
-)).set_index("encounter_id")
+).set_index("encounter_id")
 
 df_diabetes.head()
+
+#Store target variable in separate dataframe and drop it from the main dataframe
+y = df_diabetes["readmitted"].reset_index().set_index("encounter_id")
+
+#Drop
+df_diabetes.drop(columns=["readmitted"], inplace=True)
 
 
 # CATEGORIZE VARIABLES
@@ -323,18 +329,9 @@ df_diabetes[["race", "gender", "age", "weight"]].head(10)
 # Check race categories, including missing values
 df_diabetes["race"].value_counts(dropna=False)
 
-# %% id="eb44b91e"
-# Replace missing race with 'Unknown'
-df_diabetes["race"] = df_diabetes["race"].fillna("Unknown")
-df_diabetes["race"].value_counts()
-
 # %% id="152f5000"
 # Check gender categories (the 3 'Unknown' rows are kept, not inferred)
 df_diabetes["gender"].value_counts(dropna=False)
-
-# Rename 'Unknown/Invalid' to 'Unknown' for consistency
-df_diabetes["gender"] = df_diabetes["gender"].replace("Unknown/Invalid", "Unknown")
-df_diabetes["gender"].value_counts()
 
 # %% id="feb5469d"
 # Define the correct order of the age bands
@@ -358,7 +355,6 @@ age_summary = pd.DataFrame(
 age_summary["%"] = (age_summary["Count"] / age_summary["Count"].sum() * 100).round(2)
 age_summary.style.hide(axis="index").format({"%": "{:.2f}"})
 
-# %% [markdown]
 # %% id="88fdbbdf"
 # Convert age bands to numbers (0–9)
 df_diabetes["age"] = df_diabetes["age"].cat.codes
@@ -383,10 +379,6 @@ weight_summary = (
 )
 weight_summary["%"] = weight_summary["Count"] / weight_summary["Count"].sum() * 100
 weight_summary.style.hide(axis="index").format({"%": "{:.0f}"})
-
-# %% id="89f8b9d7"
-# Drop the original weight column (replaced by weight_recorded flag)
-df_diabetes.drop(columns="weight", inplace=True)
 
 # %% [markdown] id="48237fef"
 # **Sociodemographic decisions:**
@@ -525,562 +517,6 @@ df_diabetes[["change", "diabetesMed"]].apply(
 # - **change, diabetesMed:** both are binary variables with no missing values, recoded as 1/0 (Ch/Yes = 1, No = 0) so they can be used directly in the models.
 
 # %% [markdown]
-# # Data Preprocessing
-
-# %% [markdown]
-# ## Sociodemographic Variables
-
-# %% [markdown]
-# ### Handle missing values
-
-# %% id="eb44b91e"
-# Replace missing race with 'Unknown'
-df_diabetes["race"] = df_diabetes["race"].fillna("Unknown")
-df_diabetes["race"].value_counts()
-
-# %%
-# Rename 'Unknown/Invalid' to 'Unknown' for consistency
-df_diabetes["gender"] = df_diabetes["gender"].replace("Unknown/Invalid", "Unknown")
-df_diabetes["gender"].value_counts()
-
-# %% [markdown]
-# ### Encode age
-
-# %% id="836b0390"
-# Convert age into an ordered categorical variable
-df_diabetes["age"] = pd.Categorical(
-    df_diabetes["age"], categories=AGE_ORDER, ordered=True
-)
-
-# %% id="88fdbbdf"
-# Convert age bands to numbers (0–9)
-df_diabetes["age"] = df_diabetes["age"].cat.codes
-
-# %% id="48b076ba"
-# Verify that all age values matched one of the 10 age bands
-df_diabetes["age"].unique()
-
-# %% [markdown]
-# ### Create weight flag
-
-# %% id="622f2248"
-# Create a flag indicating whether weight was recorded (96.86% missing)
-df_diabetes["weight_recorded"] = df_diabetes["weight"].notna().astype(int)
-df_diabetes["weight_recorded"].value_counts()
-
-# %% id="5e861db1"
-# Summary table of the weight_recorded flag
-weight_summary = (
-    df_diabetes["weight_recorded"]
-    .value_counts()
-    .rename(index={0: "Not recorded (0)", 1: "Recorded (1)"})
-    .rename_axis("Weight")
-    .reset_index(name="Count")
-)
-weight_summary["%"] = weight_summary["Count"] / weight_summary["Count"].sum() * 100
-weight_summary.style.hide(axis="index").format({"%": "{:.0f}"})
-
-# %% id="89f8b9d7"
-# Drop the original weight column (replaced by weight_recorded flag)
-df_diabetes.drop(columns="weight", inplace=True)
-
-# %% [markdown]
-# ## Diagnoses
-
-# %% [markdown]
-# ### Reduce cardinality
-
-# %% id="07ab5c27"
-# Create grouped versions of the 3 diagnosis columns (raw codes are kept)
-for col in diag_cols:
-    df_diabetes[f"{col}_group"] = df_diabetes[col].apply(group_icd9)
-
-# %% id="af06d0e0"
-# Summary table of diagnosis groups (% of encounters)
-diag_summary = pd.DataFrame(
-    {
-        col: df_diabetes[f"{col}_group"].value_counts(normalize=True) * 100
-        for col in diag_cols
-    }
-)
-diag_summary.sort_values("diag_1", ascending=False).style.format("{:.1f}")
-
-# %%
-# Drop raw ICD-9 codes (replaced by the _group columns) and encounter_id (row key only)
-df_diabetes.drop(columns=["diag_1", "diag_2", "diag_3", "encounter_id"], inplace=True)
-
-# %% [markdown]
-# #### Handle Outliers
-
-# %%
-# Cap number_diagnoses at 10: values 10–16 become one group ("10+"), separate from 9
-df_diabetes["number_diagnoses"] = df_diabetes["number_diagnoses"].clip(upper=10)
-
-# Check number_diagnoses after the cap: 1–9 unchanged, 10–16 grouped as 10
-df_diabetes["number_diagnoses"].value_counts().sort_index()
-
-# %% [markdown]
-# ## Lab Results
-
-# %% [markdown]
-# ### Handle missing values
-
-# %% id="f73a850e"
-# Replace 'None' / missing lab results with 'Not measured' (the test was not performed)
-for col in ["max_glu_serum", "A1Cresult"]:
-    df_diabetes[col] = (
-        df_diabetes[col].replace("None", "Not measured").fillna("Not measured")
-    )
-
-# %%
-# Check lab result categories after replacing missing values with 'Not measured'
-df_diabetes[["max_glu_serum", "A1Cresult"]].apply(
-    lambda s: s.value_counts(dropna=False)
-).fillna(0).astype(int)
-
-# %% id="70f50299"
-# Percentage of encounters where each lab test was not performed
-((df_diabetes[["max_glu_serum", "A1Cresult"]] == "Not measured").mean() * 100).round(1)
-
-# %% [markdown]
-# ## Medication Summary
-
-
-# %% [markdown] id="dd9b3ff1"
-# **Lab results decisions:**
-# - **max_glu_serum, A1Cresult:** missing values indicate that the test was not performed (approximately 95% and 83% of encounters, respectively). These were recoded as `Not measured` rather than imputed, since the absence of a test may itself be informative. Both variables were kept as categorical and will be encoded in the modelling pipeline.
-
-# %% [markdown] id="dbc384ec"
-# ### Medication Summary
-#
-# | Variable | Description |
-# |---|---|
-# | `change` | Whether diabetes medication changed during the encounter (Ch / No) |
-# | `diabetesMed` | Whether any diabetes medication was prescribed (Yes / No) |
-
-# %% id="5fc99f55"
-# Preview the raw medication summary values (first 10 rows)
-df_diabetes[["change", "diabetesMed"]].head(10).T
-
-# %% id="b914afd0"
-# Check medication summary categories, including missing values
-df_diabetes[["change", "diabetesMed"]].apply(
-    lambda s: s.value_counts(dropna=False)
-).fillna(0).astype(int)
-
-# %% [markdown] id="6224e2ae"
-# **Medication summary decisions:**
-# - **change, diabetesMed:** both are binary variables with no missing values, recoded as 1/0 (Ch/Yes = 1, No = 0) so they can be used directly in the models.
-
-# %% [markdown]
-# ### Binary encoding
-
-# %% id="d823d0c8"
-# Convert change and diabetesMed into binary variables (1 = Ch/Yes, 0 = No)
-df_diabetes["change"] = df_diabetes["change"].map({"Ch": 1, "No": 0})
-df_diabetes["diabetesMed"] = df_diabetes["diabetesMed"].map({"Yes": 1, "No": 0})
-
-# %% id="7791bd69"
-# Check that no unexpected values were turned into NaN
-df_diabetes[["change", "diabetesMed"]].apply(
-    lambda s: s.value_counts(dropna=False)
-).fillna(0).astype(int)
-
-# %% [markdown]
-# ## Distribution & Correlation (cleaned patient variables)
-
-# %% [markdown] id="0b6f28fd"
-# ### Distribution
-
-# %% [markdown] id="d8009533"
-# **Conclusion:**
-# - **race:** mostly Caucasian (approximately 75%), followed by AfricanAmerican (approximately 19%); the other groups are small.
-# - **gender:** fairly balanced (approximately 54% Female, 46% Male); only 3 `Unknown`.
-# - **age:** concentrated in the older bands (codes 5–8, i.e. 50–90 years).
-# - **weight_recorded:** almost always 0, confirming weight was rarely recorded.
-# - **diagnosis groups:** Circulatory is the most frequent clinical group in all three diagnosis columns.
-# - **number_diagnoses:** strong spike at 9, as noted in the diagnoses decisions.
-# - **max_glu_serum, A1Cresult:** dominated by `Not measured`.
-# - **change, diabetesMed:** approximately 46% of encounters had a medication change and 77% had diabetes medication prescribed.
-
-# %% id="14cce84a"
-# Create a list with my assigned columns (after cleaning)
-my_cols = [
-    "race",
-    "gender",
-    "age",
-    "weight_recorded",
-    "diag_1_group",
-    "diag_2_group",
-    "diag_3_group",
-    "number_diagnoses",
-    "max_glu_serum",
-    "A1Cresult",
-    "change",
-    "diabetesMed",
-]
-
-# Create a dataframe with only these columns
-df_my_data = df_diabetes[my_cols].copy()
-
-# Plot distribution in bar charts
-fig, axes = plt.subplots(3, 4, figsize=(18, 13))
-
-for ax, col in zip(axes.flatten(), df_my_data.columns):
-    # Numeric columns in natural order, text columns from most to least frequent
-    if pd.api.types.is_numeric_dtype(df_my_data[col]):
-        order = sorted(df_my_data[col].unique())
-    else:
-        order = df_my_data[col].value_counts().index
-    sns.countplot(df_my_data, x=col, ax=ax, order=order)
-    ax.set_title(f"Distribution of {col}", fontsize=10)
-    ax.set_xlabel("")
-    ax.tick_params(axis="x", rotation=45)
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown] id="a6e9JIquHZqB"
-# ### Correlation
-
-# %% id="bf08d0f7"
-# Encode text columns to int so they can enter the correlation matrix
-df_my_data_encod = df_my_data.copy()
-text_cols = [
-    "race",
-    "gender",
-    "diag_1_group",
-    "diag_2_group",
-    "diag_3_group",
-    "max_glu_serum",
-    "A1Cresult",
-]
-le = LabelEncoder()
-for col in text_cols:
-    df_my_data_encod[col] = le.fit_transform(df_my_data_encod[col])
-
-# Add the target as 0/1 to see each variable's link with early readmission
-df_my_data_encod["early_readmit"] = (df_diabetes["readmitted"] == "<30").astype(int)
-
-# Plot heatmap using spearman correlation
-plt.figure(figsize=(10, 8))
-sns.heatmap(
-    df_my_data_encod.corr("spearman"),
-    annot=True,
-    cmap="coolwarm",
-    fmt=".2f",
-    square=True,
-    linewidth=0.5,
-    vmin=-1,
-    vmax=1,
-)
-plt.title("Correlation Analysis - Assigned Variables", fontsize=16)
-plt.tight_layout()
-plt.show()
-
-# %% [markdown]
-# **Conclusion:**
-# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Both are kept: 0.51 is not high enough to call them redundant, and tree-based models handle correlated features well.
-# - `age` and `number_diagnoses` are moderately correlated (approximately 0.20): older patients tend to have more diagnoses recorded.
-# - All variables show very weak monotonic correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
-# - Label encoding here is for exploration only. In modelling, nominal variables (race, diagnosis groups, lab results) will be one-hot encoded so no false order is introduced.
-
-# %% [markdown] id="2a61961b"
-# ## Administrative Data
-# Here we'll explore data regarding administrative data of the patient. This includes the following columns:
-# - admission_type_id
-# - admission_source_id
-# - discharge_disposition_id
-# - payer_code
-# - medical_specialty
-#
-# Some notes about the context and meaning of some of these variables:
-#
-# - At first sight, **payer_code** is not very clear on what it means when checking the information of the dataset provided on the project guidelines. Doing some research online we verified that the 2 digit codes are related to the method of payment used by the patient, that can include payments with **insurance companies, Commercial Payer, Self Pay, etc.**.  
-# This could be useful since prices and medical plans can vary and influence choice, but this columns has a **high null value**.  
-# We won't try to **map these values** as suggested by the project guidelines.
-
-# %% [markdown] id="3872205a"
-# ### Preview, describe, nulls
-
-# %% id="73ef6bb4"
-#Create a list with columns of administrative data
-admin_data_cols = [
-    "admission_type_id",
-    "admission_source_id",
-    "discharge_disposition_id",
-    "payer_code",
-    "medical_specialty"
-]
-
-#Create a daframe with only these columns
-df_admin_data = df_diabetes[admin_data_cols].copy()
-
-#check dtypes
-print(df_admin_data.dtypes)
-
-df_admin_data.tail(10)
-
-# %% id="d6f3bd0e"
-#Create profile report for this dataframe
-create_profile_report(df_admin_data, "Diabetes - Administrative Data Profile Report", "profile-report-admin-data.html")
-
-# %% id="23c9ead0"
-#Describe numerical columns
-df_admin_data.describe()
-
-# %% [markdown] id="8f0a32ec"
-# **Note to self:** Last id 29 for discharge disposition seems like it's not being used
-
-# %% id="079715ad"
-#Describe categorical columns
-df_admin_data.describe(include='object')
-
-# %% id="3e0ef972"
-#Percentage of nan values across dataframe
-round(df_admin_data.replace('?', np.nan).isna().sum() / df_admin_data.shape[0] * 100, 2)
-
-# %% [markdown] id="dfe2477c"
-# **Key Takeaway:** Columns payer_code and medical_specialty have high null values. 39% and 49% respectively
-
-# %% id="3bf4e588"
-#Check distinct values of payer code for context
-pd.DataFrame(df_admin_data['payer_code'].unique())
-
-# %% [markdown] id="6ccd7889"
-# Not much to conclude from these values. Looks like country codes but verifying some of them like "OG" they do not correspond to any country.
-# There is no DIM table for these column. Just keep values as is (mentioned in project guide) and later decide what to do with null values.
-
-# %% [markdown] id="65bbd80c"
-# ### Distribution
-
-# %% id="05496a25"
-#Plot distribution in bar charts
-fig, axes = plt.subplots(2, 3, figsize=(12, 10))
-
-for ax, col in zip(axes.flatten(), df_admin_data.columns):
-    sns.countplot(df_admin_data, x=col, ax=ax)
-    ax.set_title(f"Distribution of {col}", fontsize=10)
-    ax.set_xlabel('')
-    ax.tick_params(axis="x", rotation=45)
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown] id="cd533719"
-# Note: Check why the first value of these columns is almost always the value that occurs more frequently
-#
-# Looking at the dimension tables displayed above we see:
-# - Admission Type: 1 -> Emergency
-# - Admission Source: 7 -> Emergency Room
-# - Discharge Disposition: 1 -> Discharge to home
-# - Payer code: ? -> Null
-# - Medical Specialty: ? -> Null
-#
-# We can conclude that the majority of the occurences are emergency related and that the patient is discharged to home
-#
-
-# %% [markdown] id="71ff7094"
-# ### Correlation
-
-# %% id="0538e0f6"
-#This dataset has int and string values, so I'll encode the str values to int for an improved correlation
-
-df_admin_data_encod = df_admin_data.copy()
-#Columns: payer_code, medical_specialty
-le = LabelEncoder()
-df_admin_data_encod['payer_code'] = le.fit_transform(df_admin_data_encod['payer_code'])
-df_admin_data_encod['medical_specialty'] = le.fit_transform(df_admin_data_encod['medical_specialty'])
-
-print(df_admin_data_encod.dtypes)
-
-df_admin_data_encod[['payer_code', 'medical_specialty']].tail(10)
-
-# %% id="5c32cd17"
-# Build correlation matrix
-# matrix = df_admin_data_encod.corr()
-
-# Build plot
-plt.figure(figsize=(6, 5))
-
-#Scale values using min-max scaling to improve correlation visualization
-scaler = MinMaxScaler()
-df_corr_analysis = pd.DataFrame(
-    scaler.fit_transform(df_admin_data_encod),
-    columns=df_admin_data_encod.columns,
-    index=df_admin_data_encod.index,
-)
-
-# Plot heatmap using spearman correlation
-sns.heatmap(
-    df_admin_data_encod.corr("spearman"),
-    annot=True,
-    cmap="coolwarm",
-    fmt=".2f",
-    square=True,
-    linewidth=0.5,
-    vmin=-1,
-    vmax=1,
-)
-plt.title("Correlation Analysis - Administrative Data", fontsize=16)
-plt.tight_layout()
-plt.show()
-
-
-# %% [markdown] id="4946495e"
-# Let's check for correlation between columns that have similar meaning using qui-square:  
-# - admission_type_id <-> admission_source_id
-#
-
-# %% [markdown] id="178f19e6"
-# ## Utilization history/current stay data
-
-# %% [markdown] id="a5fc151e"
-# ### Preview, describe, nulls
-
-# %% id="909b9f76"
-util_stay_cols = [
-    "num_lab_procedures",
-    "num_procedures",
-    "num_medications",
-    "number_outpatient",
-    "number_emergency",
-    "number_inpatient",
-    "time_in_hospital"
-]
-
-df_util_stay_data = df_diabetes[util_stay_cols].copy()
-
-#dtypes
-print(df_util_stay_data.dtypes)
-
-df_util_stay_data.head(10)
-
-# %% id="1f633db9"
-#Describe
-df_util_stay_data.describe()
-
-# %%
-#Check null values
-value_summary(df_util_stay_data)
-
-# %% [markdown] id="bf6d5072"
-# ### Distribution
-# Check distribution of these numerical variables. The skewness of the distribution is important to determine what method of correlation should be used in the next step
-
-# %% id="ca8d9326"
-df_util_stay_data.columns
-
-# %% id="102cdf27"
-# Statistics of data
-for col in df_util_stay_data.columns:
-    data = df_util_stay_data[col]
-
-    mean_val = np.mean(data)
-    std_val = np.std(data)
-    iqr_val = stats.iqr(data)
-
-    print(f"{col}: \tMean Val: {mean_val} \tStandard Deviation: {std_val} \tIQR Val: {iqr_val}")
-
-
-#Create bins dict
-bins_dict = {
-    "num_lab_procedures": 15,
-    "num_procedures": 20,
-    "num_medications": 20,
-    "number_outpatient": 5,
-    "number_emergency": 5,
-    "number_inpatient": 50,
-    "time_in_hospital": 10,
-}
-
-def distro_plot_util_stay_data():
-    #Plot distribution in bar charts
-    fig, axes = plt.subplots(2, 4, figsize=(16, 10))
-
-    for ax, col in zip(axes.flatten(), df_util_stay_data.columns):
-        sns.histplot(df_util_stay_data, x=col, ax=ax, bins=bins_dict[col], kde=True)
-        ax.set_title(f"Distribution of {col}", fontsize=10)
-        ax.set_xlabel('')
-
-    plt.tight_layout()
-    plt.show()
-
-distro_plot_util_stay_data()
-
-# %% [markdown] id="98e546df"
-# **Conclusion:** Looking at the distribution plots (TBD)
-
-# %% [markdown] id="2233e7e8"
-# Let's plot the distribution of number_outpatient, number_emergency and number_inpatient in plots more tightly adjusted to better view the distributions, although they are most certainly right skewed
-
-# %% id="99988672"
-#Plot distribution in bar charts
-fig, ax = plt.subplots(1, 3, figsize=(12, 6))
-cols = ["number_outpatient", "number_emergency", "number_inpatient"]
-
-for ax, col in zip(ax, cols):
-    sns.histplot(df_util_stay_data, x=col, discrete=True, kde=False, ax=ax)
-    ax.set_title(f"Distribution of {col}", fontsize=10)
-    ax.set_xlabel('')
-
-plt.tight_layout()
-plt.show()
-
-# %% [markdown] id="f83d1a45"
-# **Conclusion** We can definitely conclude that all three variables are highly right skewed and presenting a high likelihood of having outliers. This also verifiable by the values of UIQR presented above where the difference between the first and thrid quartiles are very slim, which tells us the values are concentraded around the mean
-
-# %% [markdown] id="2dd154cf"
-# ### Correlation (with outliers)
-
-# %% id="f14fce01"
-# Build correlation matrix
-# matrix = df_util_stay_da.corr()
-
-# Build plot
-plt.figure(figsize=(6, 5))
-
-#Create temp df Join 'num_diagnoses' column since this has potentital to have some correlation with the variables being analyzed
-df_util_stay_data_temp = df_util_stay_data.join(df_diabetes['number_diagnoses'])
-
-#Scale values using min-max scaling to improve correlation visualization
-scaler = MinMaxScaler()
-df_corr_analysis = pd.DataFrame(
-    scaler.fit_transform(df_util_stay_data_temp),
-    columns=df_util_stay_data_temp.columns,
-    index=df_util_stay_data_temp.index,
-)
-
-# Plot heatmap using spearman correlation
-sns.heatmap(
-    df_corr_analysis.corr(method='pearson'),
-    annot=True,
-    cmap="coolwarm",
-    fmt=".2f",
-    square=True,
-    linewidth=0.5,
-    vmin=-1,
-    vmax=1,
-)
-
-plt.title("Correlation Analysis - Utilization and Current Stay Data", fontsize=16)
-plt.tight_layout()
-plt.show()
-
-# %% [markdown] id="57d0ce48"
-# **Conclusion:**
-# Ultimately, we can conclude that, in general, these columns aren't very correlated or similar in anyway.
-#
-# There is some correlation regarding the number of medications, where the higher the lab procedures, normal procedures and time spent in hospital are, the higher the number of medication is prescribed, which makes total sense.
-# Also, and although not highly correlated, the higher the time spent in hospital, the more medication is prescribed.
-#
-# **We should also make sure to remove outliers in pre-processing before feeding the data to our model for atleast these columns:**
-# - number_diagnoses
-# - number_outpatient
-# - number_emergency
-# - number_inpatient
-
-# %% [markdown]
 # ## Medications
 # Here we explore the 23 drug columns (`metformin` → `metformin-pioglitazone`) and how they relate to early readmission (<30 days).
 
@@ -1143,7 +579,7 @@ drug_usage.drop(columns="n_levels").style.format({"% taking": "{:.2f}"})
 # Profile report for the medication block (23 drug columns + target only;
 # a report on all 50 columns is too heavy to read for this block)
 create_profile_report(
-    df_diabetes[drug_cols + ["readmitted"]],
+    df_diabetes[drug_cols ].join(y['readmitted']),
     "Diabetes - Medications Profile Report",
     "profile-report-diabetes-medications.html",
 )
@@ -1167,7 +603,7 @@ plt.close("all")
 
 # %%
 # Early readmission flag (readmitted is not modified)
-early_readmit = (df_diabetes["readmitted"] == "<30").astype(int)
+early_readmit = (y["readmitted"] == "<30").astype(int)
 BASE_RATE = early_readmit.mean()
 ALPHA = 0.05
 LEVELS = ["No", "Steady", "Up", "Down"]
@@ -1393,7 +829,559 @@ pd.crosstab(any_dose_change.rename("n_dose_changes > 0"), df_diabetes["change"],
 # - **Redundancy:** `diabetesMed` duplicates `n_meds_taken > 0` and is a candidate to drop in preprocessing; `change` holds information the drug columns don't.
 
 # %% [markdown]
+# ## Administrative Data
+# Here we'll explore data regarding administrative data of the patient. This includes the following columns:
+# - admission_type_id
+# - admission_source_id
+# - discharge_disposition_id
+# - payer_code
+# - medical_specialty
+#
+# Some notes about the context and meaning of some of these variables:
+#
+# - At first sight, **payer_code** is not very clear on what it means when checking the information of the dataset provided on the project guidelines. Doing some research online we verified that the 2 digit codes are related to the method of payment used by the patient, that can include payments with **insurance companies, Commercial Payer, Self Pay, etc.**.  
+# This could be useful since prices and medical plans can vary and influence choice, but this columns has a **high null value**.  
+# We won't try to **map these values** as suggested by the project guidelines.
+
+# %% [markdown]
+# ### Preview, describe, nulls
+
+# %%
+#Create a list with columns of administrative data
+admin_data_cols = [
+    "admission_type_id",
+    "admission_source_id",
+    "discharge_disposition_id",
+    "payer_code",
+    "medical_specialty"
+]
+
+#Create a daframe with only these columns
+df_admin_data = df_diabetes[admin_data_cols].copy()
+
+#check dtypes
+print(df_admin_data.dtypes)
+
+df_admin_data.tail(10)
+
+# %%
+#Create profile report for this dataframe
+create_profile_report(df_admin_data, "Diabetes - Administrative Data Profile Report", "profile-report-admin-data.html")
+
+# %%
+#Describe numerical columns
+df_admin_data.describe()
+
+# %% [markdown]
+# **Note to self:** Last id 29 for discharge disposition seems like it's not being used
+
+# %%
+#Describe categorical columns
+df_admin_data.describe(include='object')
+
+# %%
+#Percentage of nan values across dataframe
+round(df_admin_data.replace('?', np.nan).isna().sum() / df_admin_data.shape[0] * 100, 2)
+
+# %% [markdown]
+# **Key Takeaway:** Columns payer_code and medical_specialty have high null values. 39% and 49% respectively
+
+# %%
+#Check distinct values of payer code for context
+pd.DataFrame(df_admin_data['payer_code'].unique())
+
+# %% [markdown]
+# Not much to conclude from these values. Looks like country codes but verifying some of them like "OG" they do not correspond to any country.
+# There is no DIM table for these column. Just keep values as is (mentioned in project guide) and later decide what to do with null values.
+
+# %% [markdown]
+# ### Distribution
+
+# %%
+#Plot distribution in bar charts
+fig, axes = plt.subplots(2, 3, figsize=(12, 10))
+
+for ax, col in zip(axes.flatten(), df_admin_data.columns):
+    sns.countplot(df_admin_data, x=col, ax=ax)
+    ax.set_title(f"Distribution of {col}", fontsize=10)
+    ax.set_xlabel('')
+    ax.tick_params(axis="x", rotation=45)
+
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# Note: Check why the first value of these columns is almost always the value that occurs more frequently
+#
+# Looking at the dimension tables displayed above we see:
+# - Admission Type: 1 -> Emergency
+# - Admission Source: 7 -> Emergency Room
+# - Discharge Disposition: 1 -> Discharge to home
+# - Payer code: ? -> Null
+# - Medical Specialty: ? -> Null
+#
+# We can conclude that the majority of the occurences are emergency related and that the patient is discharged to home
+#
+
+# %% [markdown]
+# ### Correlation
+
+# %%
+#This dataset has int and string values, so I'll encode the str values to int for an improved correlation
+
+df_admin_data_encod = df_admin_data.copy()
+#Columns: payer_code, medical_specialty
+le = LabelEncoder()
+df_admin_data_encod['payer_code'] = le.fit_transform(df_admin_data_encod['payer_code'])
+df_admin_data_encod['medical_specialty'] = le.fit_transform(df_admin_data_encod['medical_specialty'])
+
+print(df_admin_data_encod.dtypes)
+
+df_admin_data_encod[['payer_code', 'medical_specialty']].tail(10)
+
+# %%
+# Build correlation matrix
+# matrix = df_admin_data_encod.corr()
+
+# Build plot
+plt.figure(figsize=(6, 5))
+
+#Scale values using min-max scaling to improve correlation visualization
+scaler = MinMaxScaler()
+df_corr_analysis = pd.DataFrame(
+    scaler.fit_transform(df_admin_data_encod),
+    columns=df_admin_data_encod.columns,
+    index=df_admin_data_encod.index,
+)
+
+# Plot heatmap using spearman correlation
+sns.heatmap(
+    df_admin_data_encod.corr("spearman"),
+    annot=True,
+    cmap="coolwarm",
+    fmt=".2f",
+    square=True,
+    linewidth=0.5,
+    vmin=-1,
+    vmax=1,
+)
+plt.title("Correlation Analysis - Administrative Data", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# Let's check for correlation between columns that have similar meaning using qui-square:  
+# - admission_type_id <-> admission_source_id
+#
+
+# %% [markdown]
+# ## Utilization history/current stay data
+
+# %% [markdown]
+# ### Preview, describe, nulls
+
+# %%
+util_stay_cols = [
+    "num_lab_procedures",
+    "num_procedures",
+    "num_medications",
+    "number_outpatient",
+    "number_emergency",
+    "number_inpatient",
+    "time_in_hospital"
+]
+
+df_util_stay_data = df_diabetes[util_stay_cols].copy()
+
+#dtypes
+print(df_util_stay_data.dtypes)
+
+df_util_stay_data.head(10)
+
+# %%
+#Describe
+df_util_stay_data.describe()
+
+# %%
+#Check null values
+value_summary(df_util_stay_data)
+
+# %% [markdown]
+# ### Distribution
+# Check distribution of these numerical variables. The skewness of the distribution is important to determine what method of correlation should be used in the next step
+
+# %%
+df_util_stay_data.columns
+
+# %%
+# Statistics of data
+for col in df_util_stay_data.columns:
+    data = df_util_stay_data[col]
+
+    mean_val = np.mean(data)
+    std_val = np.std(data)
+    iqr_val = stats.iqr(data)
+
+    print(f"{col}: \tMean Val: {mean_val} \tStandard Deviation: {std_val} \tIQR Val: {iqr_val}")
+
+
+#Create bins dict
+bins_dict = {
+    "num_lab_procedures": 15,
+    "num_procedures": 20,
+    "num_medications": 20,
+    "number_outpatient": 5,
+    "number_emergency": 5,
+    "number_inpatient": 50,
+    "time_in_hospital": 10,
+}
+
+def distro_plot_util_stay_data():
+    #Plot distribution in bar charts
+    fig, axes = plt.subplots(2, 4, figsize=(16, 10))
+
+    for ax, col in zip(axes.flatten(), df_util_stay_data.columns):
+        sns.histplot(df_util_stay_data, x=col, ax=ax, bins=bins_dict[col], kde=True)
+        ax.set_title(f"Distribution of {col}", fontsize=10)
+        ax.set_xlabel('')
+
+    plt.tight_layout()
+    plt.show()
+
+distro_plot_util_stay_data()
+
+# %% [markdown]
+# **Conclusion:** Looking at the distribution plots (TBD)
+
+# %% [markdown]
+# Let's plot the distribution of number_outpatient, number_emergency and number_inpatient in plots more tightly adjusted to better view the distributions, although they are most certainly right skewed
+
+# %%
+#Plot distribution in bar charts
+fig, ax = plt.subplots(1, 3, figsize=(12, 6))
+cols = ["number_outpatient", "number_emergency", "number_inpatient"]
+
+for ax, col in zip(ax, cols):
+    sns.histplot(df_util_stay_data, x=col, discrete=True, kde=False, ax=ax)
+    ax.set_title(f"Distribution of {col}", fontsize=10)
+    ax.set_xlabel('')
+
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Conclusion** We can definitely conclude that all three variables are highly right skewed and presenting a high likelihood of having outliers. This also verifiable by the values of UIQR presented above where the difference between the first and thrid quartiles are very slim, which tells us the values are concentraded around the mean
+
+# %% [markdown]
+# ### Correlation (with outliers)
+
+# %%
+# Build correlation matrix
+# matrix = df_util_stay_da.corr()
+
+# Build plot
+plt.figure(figsize=(6, 5))
+
+#Create temp df Join 'num_diagnoses' column since this has potentital to have some correlation with the variables being analyzed
+df_util_stay_data_temp = df_util_stay_data.join(df_diabetes['number_diagnoses'])
+
+#Scale values using min-max scaling to improve correlation visualization
+scaler = MinMaxScaler()
+df_corr_analysis = pd.DataFrame(
+    scaler.fit_transform(df_util_stay_data_temp),
+    columns=df_util_stay_data_temp.columns,
+    index=df_util_stay_data_temp.index,
+)
+
+# Plot heatmap using spearman correlation
+sns.heatmap(
+    df_corr_analysis.corr(method='pearson'),
+    annot=True,
+    cmap="coolwarm",
+    fmt=".2f",
+    square=True,
+    linewidth=0.5,
+    vmin=-1,
+    vmax=1,
+)
+
+plt.title("Correlation Analysis - Utilization and Current Stay Data", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Conclusion:**
+# Ultimately, we can conclude that, in general, these columns aren't very correlated or similar in anyway.
+#
+# There is some correlation regarding the number of medications, where the higher the lab procedures, normal procedures and time spent in hospital are, the higher the number of medication is prescribed, which makes total sense.
+# Also, and although not highly correlated, the higher the time spent in hospital, the more medication is prescribed.
+#
+# **We should also make sure to remove outliers in pre-processing before feeding the data to our model for atleast these columns:**
+# - number_diagnoses
+# - number_outpatient
+# - number_emergency
+# - number_inpatient
+
+# %% [markdown]
 # # Data Preprocessing
+
+# %% [markdown]
+# ## Sociodemographic Variables
+
+# %% [markdown]
+# ### Handle missing values
+
+# %% id="eb44b91e"
+# Replace missing race with 'Unknown'
+df_diabetes["race"] = df_diabetes["race"].fillna("Unknown")
+df_diabetes["race"].value_counts()
+
+# %%
+# Rename 'Unknown/Invalid' to 'Unknown' for consistency
+df_diabetes["gender"] = df_diabetes["gender"].replace("Unknown/Invalid", "Unknown")
+df_diabetes["gender"].value_counts()
+
+# %% [markdown]
+# ### Encode age
+
+# %% id="836b0390"
+# Convert age into an ordered categorical variable
+df_diabetes["age"] = pd.Categorical(
+    df_diabetes["age"], categories=AGE_ORDER, ordered=True
+)
+
+# %% id="88fdbbdf"
+# Convert age bands to numbers (0–9)
+df_diabetes["age"] = df_diabetes["age"].cat.codes
+
+# %% id="48b076ba"
+# Verify that all age values matched one of the 10 age bands
+df_diabetes["age"].unique()
+
+# %% [markdown]
+# ### Create weight flag
+
+# %% id="622f2248"
+# Create a flag indicating whether weight was recorded (96.86% missing)
+df_diabetes["weight_recorded"] = df_diabetes["weight"].notna().astype(int)
+df_diabetes["weight_recorded"].value_counts()
+
+# %% id="5e861db1"
+# Summary table of the weight_recorded flag
+weight_summary = (
+    df_diabetes["weight_recorded"]
+    .value_counts()
+    .rename(index={0: "Not recorded (0)", 1: "Recorded (1)"})
+    .rename_axis("Weight")
+    .reset_index(name="Count")
+)
+weight_summary["%"] = weight_summary["Count"] / weight_summary["Count"].sum() * 100
+weight_summary.style.hide(axis="index").format({"%": "{:.0f}"})
+
+# %% id="89f8b9d7"
+# Drop the original weight column (replaced by weight_recorded flag)
+df_diabetes.drop(columns="weight", inplace=True)
+
+# %% [markdown]
+# ## Diagnoses
+
+# %% [markdown]
+# ### Reduce cardinality
+
+# %% id="07ab5c27"
+# Create grouped versions of the 3 diagnosis columns (raw codes are kept)
+for col in diag_cols:
+    df_diabetes[f"{col}_group"] = df_diabetes[col].apply(group_icd9)
+
+# %% id="af06d0e0"
+# Summary table of diagnosis groups (% of encounters)
+diag_summary = pd.DataFrame(
+    {
+        col: df_diabetes[f"{col}_group"].value_counts(normalize=True) * 100
+        for col in diag_cols
+    }
+)
+diag_summary.sort_values("diag_1", ascending=False).style.format("{:.1f}")
+
+# %%
+# Drop raw ICD-9 codes (replaced by the _group columns) and encounter_id (row key only)
+df_diabetes.drop(columns=["diag_1", "diag_2", "diag_3"], inplace=True)
+
+# %% [markdown]
+# #### Handle Outliers
+
+# %%
+# Cap number_diagnoses at 10: values 10–16 become one group ("10+"), separate from 9
+df_diabetes["number_diagnoses"] = df_diabetes["number_diagnoses"].clip(upper=10)
+
+# Check number_diagnoses after the cap: 1–9 unchanged, 10–16 grouped as 10
+df_diabetes["number_diagnoses"].value_counts().sort_index()
+
+# %% [markdown]
+# ## Lab Results
+
+# %% [markdown]
+# ### Handle missing values
+
+# %% id="f73a850e"
+# Replace 'None' / missing lab results with 'Not measured' (the test was not performed)
+for col in ["max_glu_serum", "A1Cresult"]:
+    df_diabetes[col] = (
+        df_diabetes[col].replace("None", "Not measured").fillna("Not measured")
+    )
+
+# %%
+# Check lab result categories after replacing missing values with 'Not measured'
+df_diabetes[["max_glu_serum", "A1Cresult"]].apply(
+    lambda s: s.value_counts(dropna=False)
+).fillna(0).astype(int)
+
+# %% id="70f50299"
+# Percentage of encounters where each lab test was not performed
+((df_diabetes[["max_glu_serum", "A1Cresult"]] == "Not measured").mean() * 100).round(1)
+
+# %% [markdown]
+# ## Medication Summary
+
+
+# %% [markdown] id="dd9b3ff1"
+# **Lab results decisions:**
+# - **max_glu_serum, A1Cresult:** missing values indicate that the test was not performed (approximately 95% and 83% of encounters, respectively). These were recoded as `Not measured` rather than imputed, since the absence of a test may itself be informative. Both variables were kept as categorical and will be encoded in the modelling pipeline.
+
+# %% [markdown] id="dbc384ec"
+# ### Medication Summary
+#
+# | Variable | Description |
+# |---|---|
+# | `change` | Whether diabetes medication changed during the encounter (Ch / No) |
+# | `diabetesMed` | Whether any diabetes medication was prescribed (Yes / No) |
+
+# %% id="5fc99f55"
+# Preview the raw medication summary values (first 10 rows)
+df_diabetes[["change", "diabetesMed"]].head(10).T
+
+# %% id="b914afd0"
+# Check medication summary categories, including missing values
+df_diabetes[["change", "diabetesMed"]].apply(
+    lambda s: s.value_counts(dropna=False)
+).fillna(0).astype(int)
+
+# %% [markdown] id="6224e2ae"
+# **Medication summary decisions:**
+# - **change, diabetesMed:** both are binary variables with no missing values, recoded as 1/0 (Ch/Yes = 1, No = 0) so they can be used directly in the models.
+
+# %% [markdown]
+# ### Binary encoding
+
+# %% id="d823d0c8"
+# Convert change and diabetesMed into binary variables (1 = Ch/Yes, 0 = No)
+df_diabetes["change"] = df_diabetes["change"].map({"Ch": 1, "No": 0})
+df_diabetes["diabetesMed"] = df_diabetes["diabetesMed"].map({"Yes": 1, "No": 0})
+
+# %% id="7791bd69"
+# Check that no unexpected values were turned into NaN
+df_diabetes[["change", "diabetesMed"]].apply(
+    lambda s: s.value_counts(dropna=False)
+).fillna(0).astype(int)
+
+# %% [markdown]
+# ## Distribution & Correlation (cleaned patient variables)
+
+# %% [markdown] id="0b6f28fd"
+# ### Distribution
+
+# %% [markdown] id="d8009533"
+# **Conclusion:**
+# - **race:** mostly Caucasian (approximately 75%), followed by AfricanAmerican (approximately 19%); the other groups are small.
+# - **gender:** fairly balanced (approximately 54% Female, 46% Male); only 3 `Unknown`.
+# - **age:** concentrated in the older bands (codes 5–8, i.e. 50–90 years).
+# - **weight_recorded:** almost always 0, confirming weight was rarely recorded.
+# - **diagnosis groups:** Circulatory is the most frequent clinical group in all three diagnosis columns.
+# - **number_diagnoses:** strong spike at 9, as noted in the diagnoses decisions.
+# - **max_glu_serum, A1Cresult:** dominated by `Not measured`.
+# - **change, diabetesMed:** approximately 46% of encounters had a medication change and 77% had diabetes medication prescribed.
+
+# %% id="14cce84a"
+# Create a list with my assigned columns (after cleaning)
+my_cols = [
+    "race",
+    "gender",
+    "age",
+    "weight_recorded",
+    "diag_1_group",
+    "diag_2_group",
+    "diag_3_group",
+    "number_diagnoses",
+    "max_glu_serum",
+    "A1Cresult",
+    "change",
+    "diabetesMed",
+]
+
+# Create a dataframe with only these columns
+df_my_data = df_diabetes[my_cols].copy()
+
+# Plot distribution in bar charts
+fig, axes = plt.subplots(3, 4, figsize=(18, 13))
+
+for ax, col in zip(axes.flatten(), df_my_data.columns):
+    # Numeric columns in natural order, text columns from most to least frequent
+    if pd.api.types.is_numeric_dtype(df_my_data[col]):
+        order = sorted(df_my_data[col].unique())
+    else:
+        order = df_my_data[col].value_counts().index
+    sns.countplot(df_my_data, x=col, ax=ax, order=order)
+    ax.set_title(f"Distribution of {col}", fontsize=10)
+    ax.set_xlabel("")
+    ax.tick_params(axis="x", rotation=45)
+
+plt.tight_layout()
+plt.show()
+
+# %% [markdown] id="a6e9JIquHZqB"
+# ### Correlation
+
+# %% id="bf08d0f7"
+# Encode text columns to int so they can enter the correlation matrix
+df_my_data_encod = df_my_data.copy()
+text_cols = [
+    "race",
+    "gender",
+    "diag_1_group",
+    "diag_2_group",
+    "diag_3_group",
+    "max_glu_serum",
+    "A1Cresult",
+]
+le = LabelEncoder()
+for col in text_cols:
+    df_my_data_encod[col] = le.fit_transform(df_my_data_encod[col])
+
+# Add the target as 0/1 to see each variable's link with early readmission
+df_my_data_encod["early_readmit"] = (y["readmitted"] == "<30").astype(int)
+
+# Plot heatmap using spearman correlation
+plt.figure(figsize=(10, 8))
+sns.heatmap(
+    df_my_data_encod.corr("spearman"),
+    annot=True,
+    cmap="coolwarm",
+    fmt=".2f",
+    square=True,
+    linewidth=0.5,
+    vmin=-1,
+    vmax=1,
+)
+plt.title("Correlation Analysis - Assigned Variables", fontsize=16)
+plt.tight_layout()
+plt.show()
+
+# %% [markdown]
+# **Conclusion:**
+# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Both are kept: 0.51 is not high enough to call them redundant, and tree-based models handle correlated features well.
+# - `age` and `number_diagnoses` are moderately correlated (approximately 0.20): older patients tend to have more diagnoses recorded.
+# - All variables show very weak monotonic correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
+# - Label encoding here is for exploration only. In modelling, nominal variables (race, diagnosis groups, lab results) will be one-hot encoded so no false order is introduced.
 
 # %% [markdown]
 # ## Administrative Data
@@ -1609,11 +1597,11 @@ print(f"\nMedical Specialty: \n\n{value_summary(df_admin_data_pre, "medical_spec
 
 # %% [markdown]
 # ## Utilization History/Current Stay Data
-
-
+#
+#
 
 # %% [markdown]
-### Outliers
+# ## Outliers
 # Handling outliers in this dataset is highly dependent on the model that will be used.
 # If using a model that is sensitive to outliers (Distance based), like linear regression, we should remove them. 
 # If using a model like Random Forest, we can keep them since the model is not sensitive to outliers.
@@ -1646,8 +1634,8 @@ cols_remove_outliers = [
 df_util_stay_data = winsorize_upper(df_util_stay_data, cols_remove_outliers, 0.99)
 # %%
 distro_plot_util_stay_data()
-#%% [markdown]
-### Scaling
+# %% [markdown]
+# ## Scaling
 # If using a model that is based on distance we should scale the data. For now, I'll prepare a function that scales the selected columns in an array using MinMaxScaler. We can use it if needed.
 
 # %%
@@ -1669,22 +1657,22 @@ def scale_columns(df: pd.DataFrame, cols: list = None, scaler: MinMaxScaler = No
 # df_util_stay_data_scaled = scale_columns(df_util_stay_data, cols_remove_outliers)
 
 # %% [markdown]
-### Feature Columns
+# ## Feature Columns
 # Let's create a few features that might be useful for the model. 
 
 # %% [markdown]
 # 1. Total Prior Visits - Sum all prior visits (outpatient, emergency, inpatient) into a single feature. This will help the model understand the patient's utilization history better.
 # total_prior_visits = number_outpatient + number_emergency + number_inpatient
 
-#%%
+# %%
 df_util_stay_data["total_prior_visits"] = df_util_stay_data[["number_outpatient", "number_emergency", "number_inpatient"]].sum(axis=1)
 
-#%% [markdown]
+# %% [markdown]
 # 2. Rate of Lab Procedures per days in hospital - This feature will help the model understand how many lab procedures are performed per day of hospital stay. This might be useful to understand the severity of the patient's condition.
 # %%
 df_util_stay_data["lab_procedures_per_day"] = df_util_stay_data["num_lab_procedures"] / df_util_stay_data["time_in_hospital"]
 
-#%% [markdown]
+# %% [markdown]
 # 3. Is prior inpatient - This feature will help the model understand if the patient has been admitted to the hospital before. Once again, this might be useful to understand the severity of the patient's condition.
-#%%
+# %%
 df_util_stay_data["is_prior_inpatient"] = (df_util_stay_data["number_inpatient"] > 0).astype(int)
