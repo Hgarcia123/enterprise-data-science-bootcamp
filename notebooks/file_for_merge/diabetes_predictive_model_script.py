@@ -7,7 +7,7 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.19.6
 #   kernelspec:
-#     display_name: .venv (3.13.15)
+#     display_name: .venv
 #     language: python
 #     name: python3
 # ---
@@ -48,6 +48,30 @@ DIABETES_CSV = PROJECT / "data" / "raw" / "diabetic_data.csv"
 IDS_MAPING_CSV = PROJECT / "data" / "raw" / "IDS_mapping.csv"
 
 
+# %% [markdown]
+# # Utils
+
+# %%
+### Functions ###
+
+def value_summary(df:pd.DataFrame, col=None):
+
+    if col is None:
+        return (pd.DataFrame({
+                "Null Values": df.isna().sum(),
+                "Percentage": (df.isna().sum() / df.shape[0] * 100).round(2)
+            })
+        )
+    counts = df[col].value_counts(dropna=False)
+    return pd.DataFrame({
+        "Abs Values": counts,
+        "Percentage": (counts / len(df) * 100).round(2)
+    })
+
+
+# %% [markdown]
+# # Data Import
+
 # %% [markdown] id="1823464b"
 # ## Diabetes main fact table
 
@@ -55,9 +79,7 @@ IDS_MAPING_CSV = PROJECT / "data" / "raw" / "IDS_mapping.csv"
 # Read diabetes CSV
 df_diabetes = pd.read_csv(
     DIABETES_CSV, delimiter=",", na_values="?", keep_default_na=False, low_memory=False
-)
-df_diabetes.head()
-
+).set_index("encounter_id")
 
 #CATEGORIZE VARIABLES
 
@@ -117,6 +139,8 @@ CATEGORICAL = [
     "diabetesMed",
     "readmitted"
 ]
+
+df_diabetes.head()
 
 
 # %% [markdown] id="67b140e8"
@@ -246,7 +270,7 @@ df_diabetes.duplicated().sum()
 
 # %% id="7295ad23"
 # Check that each encounter_id appears only once
-df_diabetes["encounter_id"].is_unique
+df_diabetes.index.is_unique
 
 # %% id="8bb36185"
 # Count unique patients
@@ -594,6 +618,12 @@ plt.title("Correlation Analysis - Assigned Variables", fontsize=16)
 plt.tight_layout()
 plt.show()
 
+# %% [markdown]
+# **Conclusion:**
+# - `change` and `diabetesMed` are the most correlated pair (approximately 0.51): a medication change implies a diabetes medication was prescribed. Worth checking for redundancy before modelling.
+# - `age` and `number_diagnoses` are moderately correlated (approximately 0.20): older patients tend to have more diagnoses recorded.
+# - All variables show very weak linear correlation with early readmission (|ρ| ≤ 0.05). This does not make them useless: tree-based models can capture non-linear effects and interactions.
+
 # %% [markdown] id="2a61961b"
 # ## Administrative Data
 # Here we'll explore data regarding administrative data of the patient. This includes the following columns:
@@ -603,6 +633,11 @@ plt.show()
 # - payer_code
 # - medical_specialty
 #
+# Some notes about the context and meaning of some of these variables:
+#
+# - At first sight, **payer_code** is not very clear on what it means when checking the information of the dataset provided on the project guidelines. Doing some research online we verified that the 2 digit codes are related to the method of payment used by the patient, that can include payments with **insurance companies, Commercial Payer, Self Pay, etc.**.  
+# This could be useful since prices and medical plans can vary and influence choice, but this columns has a **high null value**.  
+# We won't try to **map these values** as suggested by the project guidelines.
 
 # %% [markdown] id="3872205a"
 # ### Preview, describe, nulls
@@ -769,6 +804,10 @@ df_util_stay_data.head(10)
 # %% id="1f633db9"
 #Describe
 df_util_stay_data.describe()
+
+# %%
+#Check null values
+value_summary(df_util_stay_data)
 
 # %% [markdown] id="bf6d5072"
 # ### Distribution
@@ -1214,3 +1253,223 @@ pd.crosstab(any_dose_change.rename("n_dose_changes > 0"), df_diabetes["change"],
 # - **Insulin** has the strongest link with early readmission: the <30 rate rises from 10.0% (`No`) to 13.9% (`Down`). **Metformin** users are readmitted less often, probably because metformin is withheld from sicker patients (confounding), not because it protects. The other 6 kept drugs show no clear difference after the Bonferroni correction. Removing expired/hospice discharges doesn't change these patterns.
 # - **Engineered features:** `on_insulin_only` and `n_dose_changes` show the clearest differences, but both lean heavily on insulin (85% of dose changes are insulin `Up` / `Down`); `n_meds_taken` peaks at 1 drug (mostly insulin alone), and `n_other_meds` shows no difference.
 # - **Redundancy:** `diabetesMed` duplicates `n_meds_taken > 0` and is a candidate to drop in preprocessing; `change` holds information the drug columns don't.
+
+# %% [markdown]
+# # Data Preprocessing
+
+# %% [markdown]
+# ## Administrative Data
+
+# %% [markdown]
+# ### Replace values of id columns with IDS mapping tables
+#
+# We'll map the values of these id columns with the IDS mapping tables. For preprocessing it makes sense to treat this data as categorical and not numerical in order to understand the meaning of this data.  
+# When training the model, we can OneHotEncode these columns so that the model can use numerical values
+
+# %%
+#Copy Dataframe
+df_admin_data_pre = df_admin_data.copy()
+
+# Perform joins with IDS mapping tables: 
+df_admin_data_pre = df_admin_data_pre.merge(df_admission_type, on="admission_type_id", how="left")
+df_admin_data_pre = df_admin_data_pre.merge(df_discharge_disposition, on="discharge_disposition_id", how="left")
+df_admin_data_pre = df_admin_data_pre.merge(df_admission_source, on="admission_source_id", how="left")
+
+# Replace columns with their descriptive names and drop the original ID columns
+df_admin_data_pre = df_admin_data_pre.rename(columns={
+    "description_x": "admission_type_name",
+    "description_y": "discharge_disposition_name",
+    "description": "admission_source_name"
+}).drop(columns=["admission_type_id", "discharge_disposition_id", "admission_source_id"])
+
+#Perform strip of values in mapped columns
+df_admin_data_pre["admission_type_name"] = df_admin_data_pre["admission_type_name"].str.strip()
+df_admin_data_pre["discharge_disposition_name"] = df_admin_data_pre["discharge_disposition_name"].str.strip()
+df_admin_data_pre["admission_source_name"] = df_admin_data_pre["admission_source_name"].str.strip()
+
+# Reorder columns for clarity
+df_admin_data_pre = df_admin_data_pre[["admission_type_name", "admission_source_name", "discharge_disposition_name", "payer_code", "medical_specialty"]]
+
+# %% [markdown]
+# ### Check for null/missing/blank values
+#
+# Due to the IDS mapping, some keys might have been mapped to null. So let's perform a check on null values and make a quick check on values that might have been mapped to something like "Missing" or "Unassigned" 
+
+# %%
+#Check null values in df_admin_data_pre and it's percentage
+value_summary(df_admin_data_pre)
+
+# %% [markdown]
+# Columns that were mapped have less than 10% null values. Let's check the distinct values of these columns since in the preview of the IDS mapping tables, we can see **High Cardinality** of some categories that might be redundant, and some categories with values like "Not Mapped", that can be **considered as null**.
+
+# %% [markdown]
+# ### Reduce Cardinality
+
+# %% [markdown]
+# 1. Admission Type
+
+# %%
+#Admission Type Name unique values grouped by count
+value_summary(df_admin_data_pre, "admission_type_name")
+
+# %% [markdown]
+# Let's map the values "Not Available" and "Not Mapped" to "Unknown". Also fillna with "Unknown"
+
+# %%
+admission_mapping_na_values =  {
+    "Not Mapped": "Unknown",
+    "Not Available": "Unknown"
+}
+
+#Map values
+df_admin_data_pre["admission_type_name"] = df_admin_data_pre["admission_type_name"].replace(admission_mapping_na_values).fillna("Unknown")
+
+#Re-check count of values
+value_summary(df_admin_data_pre, "admission_type_name")
+
+# %% [markdown]
+# 2. Admission Source
+
+# %%
+#Admission Source Name unique values grouped by count
+value_summary(df_admin_data_pre, "admission_source_name")
+
+# %% [markdown]
+# Let's map the values "Not Available" and "Not Mapped" to "Unknown". Also fillna with "Unknown"  
+# To reduce cardinality, we can replace any categories related to transfers with "Transfer from a health care facility"
+
+# %%
+#Replace values in admission_source_name with 'Unknown' for Not Mapped and Not Available
+df_admin_data_pre["admission_source_name"] = df_admin_data_pre["admission_source_name"]\
+    .replace(admission_mapping_na_values)\
+        .fillna("Unknown")
+
+#Regex expresion to match "Expired" or "Hospice" in admission_source_name
+regex_transfered = r"Transfer from"
+
+#Replace categories that contain the word "Transfer from" with "Transfer from a healthcare facility" for admission_source_name
+df_admin_data_pre["admission_source_name"] = df_admin_data_pre["admission_source_name"]\
+    .replace(df_admin_data_pre["admission_source_name"][df_admin_data_pre["admission_source_name"].str.contains(regex_transfered, na=False, case=False)].values, "Transfer from a healthcare facility")
+
+#Re-check count of values
+value_summary(df_admin_data_pre, "admission_source_name")
+
+# %% [markdown]
+# 3. Discharge Disposition
+
+# %%
+#Admission Type Name unique values grouped by count
+value_summary(df_admin_data_pre, "discharge_disposition_name")
+
+# %% [markdown]
+# In this case, we only have "Not Mapped" values to replace with Unknow.  
+# Also, in order to reduce cardinality and facilitate feature selection, we'll also:
+# - Replace any categories that contain the words "Expired" or "Hospice" to a new category called "Expired/Hospice".  
+# - Replace any categories that contains the word "discharged" and with less than 3000 records 
+# This is relevant because patients who have passed away or are in hospice can't be readmited and can bias the model
+
+# %%
+#Replace "Not Mapped" and NaN values with "Unknown" for discharge_disposition_name
+df_admin_data_pre["discharge_disposition_name"] = df_admin_data_pre["discharge_disposition_name"]\
+    .replace("Not Mapped", "Unknown")\
+        .fillna("Unknown")
+
+#Regex expresion to match "Expired" or "Hospice" in discharge_disposition_name
+regex_expired_hospice = r"expired|hospice"
+
+#Replace categories that contain the word "Expired" or "Hospice" with "Expired/Hospice" for discharge_disposition_name
+df_admin_data_pre["discharge_disposition_name"] = df_admin_data_pre["discharge_disposition_name"]\
+    .replace(df_admin_data_pre["discharge_disposition_name"][df_admin_data_pre["discharge_disposition_name"].str.contains(regex_expired_hospice, na=False, case=False)].values, "Expired/Hospice")
+
+
+#Replace categories that contain the word "discharged" to "Discharged to another health institution" and have less than 3000 records for discharge_disposition_name
+regex_discharged = r"discharged|transferred"
+
+counts = df_admin_data_pre["discharge_disposition_name"].value_counts()
+filtered_records = counts[counts < 3000].index
+
+mask = (
+    df_admin_data_pre["discharge_disposition_name"].str.contains(regex_discharged, na=False, case=False) &
+    df_admin_data_pre["discharge_disposition_name"].isin(filtered_records)
+)
+
+df_admin_data_pre.loc[mask, "discharge_disposition_name"] = "Discharged to another health institution"
+
+#Re-check count of values
+value_summary(df_admin_data_pre, "discharge_disposition_name")
+
+# %% [markdown]
+# 4. Medical Specialty
+
+# %%
+medical_specialty_summ = value_summary(df_admin_data_pre, "medical_specialty")
+medical_specialty_summ
+
+# %% [markdown]
+# There is a high cardinality of medical specialties in the dataset. To simplify, any category that represents less than 1% of records will be changed to "Other"
+
+# %%
+# Create mask for medical_specialty values with less 1% of records and replace them with "Other"
+filtered_records = medical_specialty_summ[medical_specialty_summ["Percentage"] < 1].index
+df_admin_data_pre.loc[df_admin_data_pre["medical_specialty"].isin(filtered_records), "medical_specialty"] = "Other"
+
+#Fill NaN values with "Unknown" for medical_specialty
+df_admin_data_pre["medical_specialty"] = df_admin_data_pre["medical_specialty"].fillna("Unknown")
+
+#Preview data
+value_summary(df_admin_data_pre, "medical_specialty")
+
+# %% [markdown]
+# 5. Payer Code
+
+# %%
+payer_code_summ = value_summary(df_admin_data_pre, "payer_code")
+payer_code_summ
+
+# %% [markdown]
+# Let's reduce the cardinality of this column by performing the same logic as medical specialty: Categories that represent less than 1% of the records are replaced with "Others"
+
+# %%
+# Create mask for payer_code values with less 1% of records and replace them with "Other"
+filtered_records = payer_code_summ[payer_code_summ["Percentage"] < 1].index
+df_admin_data_pre.loc[df_admin_data_pre["payer_code"].isin(filtered_records), "payer_code"] = "Other"
+
+#Fill NaN values with "Unknown" for payer_code
+df_admin_data_pre["payer_code"] = df_admin_data_pre["payer_code"].fillna("Unknown")
+
+#Preview data
+value_summary(df_admin_data_pre, "payer_code")
+
+# %% [markdown]
+# ### Handle null values
+
+# %%
+#Recheck null values in df_admin_data_pre and it's percentage
+value_summary(df_admin_data_pre)
+
+# %% [markdown]
+# All null values have been mapped to "Unknown" sucessfuly so let's see it's value count accross columns
+#
+
+# %%
+#Admission Type count of "Unknown" values
+print(f"\nAdmission Type: \n\n{value_summary(df_admin_data_pre, "admission_type_name").loc["Unknown"]}")
+print(f"\nAdmission Source: \n\n{value_summary(df_admin_data_pre, "admission_source_name").loc["Unknown"]}")
+print(f"\nDischarge Disposition: \n\n{value_summary(df_admin_data_pre, "discharge_disposition_name").loc["Unknown"]}")
+print(f"\nPayer Code: \n\n{value_summary(df_admin_data_pre, "payer_code").loc["Unknown"]}")
+print(f"\nMedical Specialty: \n\n{value_summary(df_admin_data_pre, "medical_specialty").loc["Unknown"]}")
+
+
+# %% [markdown]
+# Infering data for "Unknown" values in this dataset doesn't seem to be worth it.  
+# Correlation of these variables with other ones is very weak, even when checking the profile report with all other variables. So using methods like K-Nearest Neighbor to recover data based on other data is **not viable**.  
+# Even using methods to fill missing values with the most repeated value doesn't seem worth it since it could infer bias on the model.  
+#
+# **For now, do not recover null values. Miight change later after training model.**
+#
+# Payer Code and Medical Specialty have a high Unknown/Null value rate, 39% and 49% respectively, so these columns **might not be included in the model.**
+
+# %% [markdown]
+# ## Utilization History/Current Stay Data
+
+# %%

@@ -39,3 +39,4 @@ jupyter
 ipykernel
 jupytext
 black
+nbconvert
