@@ -12,9 +12,9 @@ This module holds, so far:
 - the utilization block: 3 features from the visit counts and the stay;
 - build_clean_table: the fixed-rule blocks in order, giving one table X and y.
 - make_target and split_by_patient: the 0/1 target and the train / validation /
-  test split grouped by patient.
-Learned steps (caps, "<1% -> Other", scaling) are not here yet: they must be
-fitted on the training set only.
+  test split grouped by patient;
+- LearnedPreprocessor: the learned steps (caps, "<1% -> Other", discharge
+  grouping), fitted on the training set only, then the utilization features.
 
 The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb`
 (Medications section, and the Data Preprocessing part for the other blocks).
@@ -22,7 +22,9 @@ The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb
 
 import numpy as np
 import pandas as pd
+from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.model_selection import GroupShuffleSplit
+from sklearn.utils.validation import check_is_fitted
 
 # The 23 drug columns, in the order they appear in the raw file
 # (metformin -> metformin-pioglitazone). Each holds "No", "Steady", "Up" or "Down".
@@ -119,6 +121,9 @@ TARGET_COL = "readmitted"
 
 # The readmitted value that is the positive class (early readmission).
 POSITIVE_CLASS = "<30"
+
+# The team seed (restructure guide); default random_state of the split.
+SEED = 81
 
 
 def build_med_features(df, drug_cols=DRUG_COLS, med_drop=MED_DROP):
@@ -625,7 +630,7 @@ def make_target(y):
     return (y == POSITIVE_CLASS).astype(int)
 
 
-def split_by_patient(X, y, groups, val_size=0.2, test_size=0.2, random_state=42):
+def split_by_patient(X, y, groups, val_size=0.2, test_size=0.2, random_state=SEED):
     """Split X and y into train / validation / test, grouped by patient.
 
     Why grouped: the data has 71,518 patients for 101,766 encounters, so many
@@ -649,7 +654,8 @@ def split_by_patient(X, y, groups, val_size=0.2, test_size=0.2, random_state=42)
             the same index as X.
         val_size: share of patients in the validation set (default 0.2).
         test_size: share of patients in the test set (default 0.2).
-        random_state: seed for both passes; the same seed gives the same split.
+        random_state: seed for both passes (default SEED = 81, the team seed); the
+            same seed gives the same split.
 
     Returns:
         X_train, X_val, X_test, y_train, y_val, y_test: rows of X and y, each
@@ -681,3 +687,136 @@ def split_by_patient(X, y, groups, val_size=0.2, test_size=0.2, random_state=42)
         X.iloc[train], X.iloc[val], X.iloc[test],
         y.iloc[train], y.iloc[val], y.iloc[test],
     )
+
+
+# The 5 columns the notebook caps at the 99th percentile (Henrique's outlier cell).
+CAP_COLS = (
+    "number_outpatient",
+    "number_emergency",
+    "number_inpatient",
+    "num_lab_procedures",
+    "num_medications",
+)
+
+# Discharge names grouped when rare, and the group they go to (notebook's wording).
+DISCHARGE_GROUP_PATTERN = r"discharged|transferred"
+DISCHARGE_GROUP_NAME = "Discharged to another health institution"
+
+
+class LearnedPreprocessor(BaseEstimator, TransformerMixin):
+    """The learned preprocessing steps, fitted on the training set only.
+
+    Steps (Henrique's, from the notebook's Data Preprocessing part):
+    1. Caps: each column in cap_cols is clipped at its cap_quantile (99th
+       percentile). A few encounters have very large counts (e.g. 42 outpatient
+       visits); the cap limits their weight without removing rows.
+    2. Rare categories: in each rare_cols column, categories with a share of rows
+       below rare_min_share (1%) become "Other". medical_specialty has 70+
+       values, most very small; the few frequent ones are kept. As in the
+       notebook, the share is a percentage rounded to 2 decimals before the
+       comparison. "Unknown" is a category like any other here.
+    3. Discharge grouping: discharge names that contain "discharged" or
+       "transferred" and have a share below discharge_min_share become
+       "Discharged to another health institution". The notebook's rule is
+       "fewer than 3,000 rows" on all 101,766 rows; as a count it would change
+       meaning on a smaller set (the training set has about 60% of the rows), so
+       it is kept as the same share, 3,000 / 101,766 (about 2.95%).
+    4. The utilization features (`add_utilization_features`), built AFTER the
+       caps, as in the notebook.
+
+    Why learned, and why train only: a percentile, a list of frequent
+    categories and a list of small discharge names are all computed from the
+    data. If they were computed on all rows (as the notebook does, before any
+    split), the validation and test rows would help decide them, and the scores
+    on those sets would be slightly optimistic. Here `fit` sees only the
+    training rows; `transform` applies the same values to any set. A category
+    seen only outside the training set is treated as rare: "Other" for the
+    rare_cols, and grouped for a discharge name matching the pattern.
+
+    Not here: scaling. Only some models need it (distance-based or
+    regularised), so it goes inside the model pipelines (Phase B), fitted with
+    the model on the training data. The notebook's `scale_columns` was never
+    called.
+
+    Parameters:
+        cap_cols: columns to cap (default CAP_COLS, the notebook's 5).
+        cap_quantile: the cap's quantile (default 0.99).
+        rare_cols: columns where rare categories become "Other".
+        rare_min_share: smallest share of rows a category needs to be kept
+            (default 0.01).
+        discharge_min_share: smallest share of rows a matching discharge name
+            needs to stay on its own (default 3000 / 101766).
+
+    Learned attributes (after fit):
+        caps_: dict column -> cap value.
+        kept_categories_: dict column -> sorted list of the categories kept.
+        discharge_kept_: sorted list of the matching discharge names kept on
+            their own (every other matching name is grouped).
+        discharge_grouped_: sorted list of the names grouped in the fit data
+            (for reporting only).
+    """
+
+    def __init__(
+        self,
+        cap_cols=CAP_COLS,
+        cap_quantile=0.99,
+        rare_cols=("medical_specialty", "payer_code"),
+        rare_min_share=0.01,
+        discharge_min_share=3000 / 101766,
+    ):
+        self.cap_cols = cap_cols
+        self.cap_quantile = cap_quantile
+        self.rare_cols = rare_cols
+        self.rare_min_share = rare_min_share
+        self.discharge_min_share = discharge_min_share
+
+    def fit(self, X, y=None):
+        """Learn the caps, the kept categories and the discharge grouping from X.
+
+        Args:
+            X: the training table (output of `build_clean_table`). Not modified.
+            y: ignored (present for the scikit-learn API).
+
+        Returns:
+            self.
+        """
+        self.caps_ = {col: X[col].quantile(self.cap_quantile) for col in self.cap_cols}
+
+        self.kept_categories_ = {}
+        for col in self.rare_cols:
+            pct = (X[col].value_counts(dropna=False) / len(X) * 100).round(2)
+            self.kept_categories_[col] = sorted(pct[pct >= self.rare_min_share * 100].index)
+
+        share = X["discharge_disposition_name"].value_counts() / len(X)
+        matching = share[share.index.str.contains(DISCHARGE_GROUP_PATTERN, case=False)]
+        self.discharge_kept_ = sorted(matching[matching >= self.discharge_min_share].index)
+        self.discharge_grouped_ = sorted(matching[matching < self.discharge_min_share].index)
+        return self
+
+    def transform(self, X):
+        """Apply the learned steps, then add the utilization features.
+
+        Args:
+            X: a table with the same columns as the fit data (train, validation
+                or test). Not modified.
+
+        Returns:
+            A copy of X (same index) with the caps, "Other" and the discharge
+            grouping applied and the 3 utilization features added.
+
+        Raises:
+            NotFittedError: if called before fit.
+        """
+        check_is_fitted(self, "caps_")
+        out = X.copy()
+        for col, cap in self.caps_.items():
+            out[col] = out[col].clip(upper=cap)
+        for col, kept in self.kept_categories_.items():
+            out.loc[~out[col].isin(kept), col] = "Other"
+
+        col = "discharge_disposition_name"
+        rare_name = out[col].str.contains(DISCHARGE_GROUP_PATTERN, case=False) & ~out[col].isin(
+            self.discharge_kept_
+        )
+        out.loc[rare_name, col] = DISCHARGE_GROUP_NAME
+        return add_utilization_features(out)

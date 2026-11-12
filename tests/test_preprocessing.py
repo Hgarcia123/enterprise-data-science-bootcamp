@@ -11,12 +11,17 @@ from pathlib import Path
 
 import pandas as pd
 
+from sklearn.exceptions import NotFittedError
+
 from src.preprocessing import (
     AGE_ORDER,
+    CAP_COLS,
     DRUG_COLS,
     MED_DROP,
     MED_KEEP,
+    DISCHARGE_GROUP_NAME,
     EXPIRED_HOSPICE_IDS,
+    LearnedPreprocessor,
     add_utilization_features,
     build_clean_table,
     build_med_features,
@@ -805,6 +810,131 @@ class TestSplitByPatient(unittest.TestCase):
         """y with a different index raises ValueError."""
         with self.assertRaises(ValueError):
             split_by_patient(self.X, self.y.iloc[::-1], self.groups)
+
+
+
+class TestLearnedPreprocessor(unittest.TestCase):
+    """Checks on `LearnedPreprocessor`: fitted on a handmade train, applied to a val.
+
+    Thresholds are set for tiny data: cap_quantile=1.0 (cap = train max),
+    rare_min_share=0.2 and discharge_min_share=0.3 (10 train rows).
+    """
+
+    def setUp(self):
+        """Build, before each test, 10 train rows and 3 val rows."""
+        n = 10
+        train = {col: list(range(1, n + 1)) for col in CAP_COLS}  # 1..10, max 10
+        train.update(
+            {
+                "time_in_hospital": [2] * n,
+                "medical_specialty": ["Cardiology"] * 5 + ["Surgery"] * 3 + ["Nephrology", "Unknown"],
+                "payer_code": ["MC"] * 6 + ["BC"] * 4,
+                "discharge_disposition_name": ["Discharged to home"] * 6
+                + ["Transferred to SNF"] * 2  # matches, 20% < 30% -> grouped
+                + ["Left AMA"] * 2,  # does not match -> kept as is
+            }
+        )
+        self.train = pd.DataFrame(train, index=pd.Index(range(100, 100 + n), name="encounter_id"))
+        val = {col: [1000, 5, 1] for col in CAP_COLS}  # 1000 is far above the train cap
+        val.update(
+            {
+                "time_in_hospital": [2, 1, 4],
+                "medical_specialty": ["Cardiology", "Oncology", "Nephrology"],  # Oncology unseen
+                "payer_code": ["BC", "XX", "MC"],  # XX unseen
+                "discharge_disposition_name": [
+                    "Discharged to home",
+                    "Transferred to a rehab unit",  # unseen, matches -> grouped
+                    "Admitted as inpatient",  # unseen, does not match -> kept
+                ],
+            }
+        )
+        self.val = pd.DataFrame(val, index=pd.Index([7, 3, 5], name="encounter_id"))
+        self.prep = LearnedPreprocessor(
+            cap_quantile=1.0, rare_min_share=0.2, discharge_min_share=0.3
+        )
+
+    def test_learned_attributes(self):
+        """After fit: caps_, kept_categories_, discharge_kept_ / _grouped_ from train."""
+        self.prep.fit(self.train)
+        self.assertEqual(self.prep.caps_, {col: 10 for col in CAP_COLS})
+        self.assertEqual(
+            self.prep.kept_categories_,
+            {"medical_specialty": ["Cardiology", "Surgery"], "payer_code": ["BC", "MC"]},
+        )
+        self.assertEqual(self.prep.discharge_kept_, ["Discharged to home"])
+        self.assertEqual(self.prep.discharge_grouped_, ["Transferred to SNF"])
+
+    def test_caps_from_train_only(self):
+        """A value of 1000 in val leaves caps_ unchanged and is clipped to the train cap."""
+        self.prep.fit(self.train)
+        caps_before = dict(self.prep.caps_)
+        out = self.prep.transform(self.val)
+        self.assertEqual(self.prep.caps_, caps_before)
+        for col in CAP_COLS:
+            self.assertEqual(out.loc[7, col], 10)
+            self.assertEqual(out.loc[3, col], 5)  # below the cap: unchanged
+
+    def test_rare_and_unseen_categories(self):
+        """Rare in train and unseen categories -> Other; kept ones unchanged."""
+        self.prep.fit(self.train)
+        out_train = self.prep.transform(self.train)
+        self.assertEqual(
+            out_train["medical_specialty"].value_counts().to_dict(),
+            {"Cardiology": 5, "Surgery": 3, "Other": 2},
+        )
+        out = self.prep.transform(self.val)
+        self.assertEqual(out["medical_specialty"].tolist(), ["Cardiology", "Other", "Other"])
+        self.assertEqual(out["payer_code"].tolist(), ["BC", "Other", "MC"])
+
+    def test_discharge_grouping(self):
+        """Rare matching names grouped, on train and on unseen names; others kept."""
+        self.prep.fit(self.train)
+        out_train = self.prep.transform(self.train)
+        self.assertEqual(
+            out_train["discharge_disposition_name"].value_counts().to_dict(),
+            {"Discharged to home": 6, DISCHARGE_GROUP_NAME: 2, "Left AMA": 2},
+        )
+        out = self.prep.transform(self.val)
+        self.assertEqual(
+            out["discharge_disposition_name"].tolist(),
+            ["Discharged to home", DISCHARGE_GROUP_NAME, "Admitted as inpatient"],
+        )
+
+    def test_utilization_features_use_capped_values(self):
+        """total_prior_visits and lab_procedures_per_day are built after the caps."""
+        out = self.prep.fit(self.train).transform(self.val)
+        self.assertEqual(out.loc[7, "total_prior_visits"], 30)  # 10 + 10 + 10, not 3000
+        self.assertEqual(out.loc[7, "lab_procedures_per_day"], 5.0)  # 10 / 2, not 500
+        self.assertEqual(out.loc[7, "is_prior_inpatient"], 1)
+
+    def test_not_fitted_raises(self):
+        """transform before fit raises NotFittedError."""
+        with self.assertRaises(NotFittedError):
+            LearnedPreprocessor().transform(self.val)
+
+    def test_inputs_unchanged(self):
+        """Neither fit nor transform modifies its input."""
+        train_before, val_before = self.train.copy(), self.val.copy()
+        self.prep.fit(self.train)
+        self.prep.transform(self.train)
+        self.prep.transform(self.val)
+        pd.testing.assert_frame_equal(self.train, train_before)
+        pd.testing.assert_frame_equal(self.val, val_before)
+
+    def test_same_columns_and_index(self):
+        """Train and val come out with the same columns and dtypes; index kept."""
+        self.prep.fit(self.train)
+        out_train, out_val = self.prep.transform(self.train), self.prep.transform(self.val)
+        self.assertEqual(list(out_train.columns), list(out_val.columns))
+        pd.testing.assert_series_equal(out_train.dtypes, out_val.dtypes)
+        pd.testing.assert_index_equal(out_val.index, self.val.index)
+
+    def test_fit_transform(self):
+        """fit_transform (from TransformerMixin) gives the same as fit then transform."""
+        a = LearnedPreprocessor(cap_quantile=1.0, rare_min_share=0.2, discharge_min_share=0.3)
+        pd.testing.assert_frame_equal(
+            a.fit_transform(self.train), self.prep.fit(self.train).transform(self.train)
+        )
 
 
 if __name__ == "__main__":
