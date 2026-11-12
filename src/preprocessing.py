@@ -1,12 +1,14 @@
 """Preprocessing steps for the Diabetes 130-US hospitals readmission project.
 
-This module holds the medication block: it turns the 23 raw drug columns into
-4 engineered count/flag features and drops the drugs that are too rare to model
-on their own. The other preprocessing blocks (demographics, diagnoses, admission
-info, ...) will be added here by the team.
+This module holds, so far:
+- the medication block: turns the 23 raw drug columns into 4 engineered
+  count/flag features and drops the drugs that are too rare to model on their own;
+- the sociodemographic block: race, gender, age and weight.
+The other preprocessing blocks (diagnoses, lab results, admin, ...) will be added
+here by the team.
 
-The constants and the feature logic come from the Medications section of
-`notebooks/diabetes_predictive_model.ipynb`.
+The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb`
+(Medications section, and the Data Preprocessing part for the other blocks).
 """
 
 import pandas as pd
@@ -72,6 +74,9 @@ MED_DROP = [
     "examide",
     "citoglipton",
 ]
+
+# The 10 age bands of the raw `age` column, youngest first; position = ordinal code 0-9.
+AGE_ORDER = [f"[{i}-{i + 10})" for i in range(0, 100, 10)]
 
 
 def build_med_features(df, drug_cols=DRUG_COLS, med_drop=MED_DROP):
@@ -140,3 +145,50 @@ def preprocess_medications(df):
     for col in feats.columns:
         out[col] = feats[col].astype(int)
     return out.drop(columns=MED_DROP)
+
+
+def preprocess_demographics(df):
+    """Apply the sociodemographic preprocessing block (race, gender, age, weight).
+
+    Steps:
+    1. race: missing -> "Unknown". Labelled rather than imputed, to avoid
+       guessing a sensitive attribute (2.2% missing).
+    2. gender: "Unknown/Invalid" -> "Unknown". The 3 rows are kept and gender is
+       not inferred.
+    3. age: band label -> ordinal code 0-9 (AGE_ORDER position). Age is only
+       available in 10-year bands, and the code keeps their natural order.
+       Done once, from the raw labels: a value that is not a band label (for
+       example an age that was already encoded) raises an error instead of
+       silently becoming -1, which is how the notebook's double encoding went
+       unnoticed.
+    4. weight: replaced by weight_recorded (1 = recorded, 0 = missing), then
+       dropped. Weight is about 97% missing, so whether it was recorded is the
+       only usable information.
+
+    Args:
+        df: DataFrame with the raw race, gender, age and weight columns.
+            It is not modified.
+
+    Returns:
+        A copy of df (same index) with race, gender and age cleaned,
+        weight_recorded added and weight removed.
+
+    Raises:
+        ValueError: if any age value is not one of the AGE_ORDER band labels;
+            the message names the values.
+    """
+    out = df.copy()
+    out["race"] = out["race"].fillna("Unknown")
+    out["gender"] = out["gender"].replace("Unknown/Invalid", "Unknown")
+
+    codes = out["age"].map({band: code for code, band in enumerate(AGE_ORDER)})
+    if codes.isna().any():
+        bad = sorted(map(str, out.loc[codes.isna(), "age"].unique()))
+        raise ValueError(
+            f"preprocess_demographics: age values that are not band labels {bad}; "
+            f"expected one of {AGE_ORDER}"
+        )
+    out["age"] = codes.astype("int8")  # int8, as the notebook's .cat.codes
+
+    out["weight_recorded"] = out["weight"].notna().astype(int)
+    return out.drop(columns="weight")

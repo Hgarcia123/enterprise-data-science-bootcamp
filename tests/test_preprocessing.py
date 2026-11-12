@@ -10,10 +10,12 @@ import unittest
 import pandas as pd
 
 from src.preprocessing import (
+    AGE_ORDER,
     DRUG_COLS,
     MED_DROP,
     MED_KEEP,
     build_med_features,
+    preprocess_demographics,
     preprocess_medications,
 )
 
@@ -94,6 +96,75 @@ class TestPreprocessMedications(unittest.TestCase):
             preprocess_medications(df)
         self.assertIn("insulin", str(ctx.exception))
         self.assertIn("examide", str(ctx.exception))
+
+
+class TestPreprocessDemographics(unittest.TestCase):
+    """Checks on `preprocess_demographics`."""
+
+    def setUp(self):
+        """Build, before each test, a tiny table made by hand: five encounters.
+
+        Missing race and weight are NaN, as after reading the CSV with na_values="?".
+        """
+        self.df = pd.DataFrame(
+            {
+                "race": [None, "Caucasian", "AfricanAmerican", None, "Asian"],
+                "gender": ["Female", "Unknown/Invalid", "Male", "Female", "Male"],
+                "age": ["[0-10)", "[90-100)", "[50-60)", "[0-10)", "[70-80)"],
+                "weight": [None, "[75-100)", None, "[50-75)", None],
+                "num_medications": [1, 2, 3, 4, 5],  # a column the block must not touch
+            },
+            index=pd.Index([101, 102, 103, 104, 105], name="encounter_id"),
+        )
+
+    def test_values_are_right_for_each_row(self):
+        """race, gender, age and weight_recorded match the hand-computed values."""
+        out = preprocess_demographics(self.df)
+        self.assertEqual(
+            out["race"].tolist(),
+            ["Unknown", "Caucasian", "AfricanAmerican", "Unknown", "Asian"],
+        )
+        self.assertEqual(out["gender"].tolist(), ["Female", "Unknown", "Male", "Female", "Male"])
+        self.assertEqual(out["age"].tolist(), [0, 9, 5, 0, 7])
+        self.assertTrue(pd.api.types.is_integer_dtype(out["age"]))
+        self.assertEqual(out["weight_recorded"].tolist(), [0, 1, 0, 1, 0])
+        self.assertTrue(pd.api.types.is_integer_dtype(out["weight_recorded"]))
+
+    def test_weight_is_dropped_and_rest_kept(self):
+        """weight is gone; the index and the other columns are unchanged."""
+        out = preprocess_demographics(self.df)
+        self.assertNotIn("weight", out.columns)
+        self.assertEqual(out.index.tolist(), self.df.index.tolist())
+        self.assertEqual(out.index.name, "encounter_id")
+        self.assertEqual(out["num_medications"].tolist(), [1, 2, 3, 4, 5])
+
+    def test_age_order_has_ten_bands(self):
+        """AGE_ORDER goes from [0-10) to [90-100)."""
+        self.assertEqual(len(AGE_ORDER), 10)
+        self.assertEqual(AGE_ORDER[0], "[0-10)")
+        self.assertEqual(AGE_ORDER[-1], "[90-100)")
+
+    def test_input_is_not_modified(self):
+        """The DataFrame passed in is left exactly as it was."""
+        before = self.df.copy()
+        preprocess_demographics(self.df)
+        pd.testing.assert_frame_equal(self.df, before)
+
+    def test_wrong_age_value_raises_valueerror(self):
+        """An age that is not a band label raises a ValueError that names it."""
+        self.df.loc[103, "age"] = "[100-110)"
+        with self.assertRaises(ValueError) as ctx:
+            preprocess_demographics(self.df)
+        self.assertIn("[100-110)", str(ctx.exception))
+
+    def test_already_encoded_age_raises_valueerror(self):
+        """Ages already encoded as 0-9 raise instead of becoming -1.
+
+        Guards against the notebook bug, where age was encoded twice.
+        """
+        self.df["age"] = [0, 9, 5, 0, 7]
+        with self.assertRaises(ValueError):
+            preprocess_demographics(self.df)
 
 
 if __name__ == "__main__":
