@@ -6,8 +6,10 @@ This module holds, so far:
 - the sociodemographic block: race, gender, age and weight;
 - the diagnoses block: ICD-9 codes grouped, number_diagnoses capped;
 - the lab results block: tests not performed labelled "Not measured";
-- the medication summary block: change and diabetesMed recoded to 1/0.
-The other preprocessing blocks (admin, utilization) will be added here by the team.
+- the medication summary block: change and diabetesMed recoded to 1/0;
+- the administrative block: admission/discharge ids decoded with IDS_mapping.csv
+  and grouped (fixed rules only; the learned groupings come later).
+The utilization block will be added here next.
 
 The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb`
 (Medications section, and the Data Preprocessing part for the other blocks).
@@ -90,6 +92,13 @@ LAB_COLS = ["max_glu_serum", "A1Cresult"]
 MED_SUMMARY_CODES = {
     "change": {"Ch": 1, "No": 0},
     "diabetesMed": {"Yes": 1, "No": 0},
+}
+
+# The 3 id columns decoded with IDS_mapping.csv -> the name column that replaces each.
+ADMIN_ID_COLS = {
+    "admission_type_id": "admission_type_name",
+    "admission_source_id": "admission_source_name",
+    "discharge_disposition_id": "discharge_disposition_name",
 }
 
 
@@ -348,4 +357,100 @@ def preprocess_medication_summary(df):
                 f"expected one of {list(codes)}"
             )
         out[col] = out[col].map(codes).astype(int)
+    return out
+
+
+def load_id_maps(path):
+    """Read IDS_mapping.csv into one id -> description map per admin id column.
+
+    The file holds 3 tables one after the other (admission_type_id,
+    discharge_disposition_id, admission_source_id). Each starts with its own
+    header row ("<name>,description") and is separated from the next by a blank
+    row (","). The file is read as the notebook does (no header, 2 columns,
+    pandas' default missing values), so "NULL" descriptions become missing, as
+    today.
+
+    Unlike the notebook, the last row of every table is kept: the notebook
+    dropped the last row of each table to remove the blank separator, but the
+    last table has no separator after it, so it lost admission source 26
+    ("Transfer from Hospice"). Here the blank rows are removed instead.
+
+    Args:
+        path: path to IDS_mapping.csv.
+
+    Returns:
+        A dict with keys "admission_type_id", "discharge_disposition_id" and
+        "admission_source_id". Each value is a Series indexed by the integer id,
+        holding the description with surrounding spaces removed (missing for
+        "NULL").
+    """
+    raw = pd.read_csv(path, header=None, names=range(2), delimiter=",")
+    raw = raw[raw[0].notna()]  # drop the blank separator rows
+    is_header = raw[0].isin(ADMIN_ID_COLS)
+    maps = {}
+    for _, table in raw.groupby(is_header.cumsum()):
+        name = table.iloc[0, 0]
+        rows = table.iloc[1:]
+        maps[name] = pd.Series(
+            rows[1].str.strip().values,
+            index=rows[0].astype(int).values,
+            name="description",
+        ).rename_axis(name)
+    return maps
+
+
+def preprocess_admin(df, id_maps):
+    """Apply the administrative preprocessing block (fixed rules only).
+
+    Steps:
+    1. admission_type_id, admission_source_id, discharge_disposition_id ->
+       admission_type_name, admission_source_name, discharge_disposition_name,
+       looked up in `id_maps`; the 3 _id columns are dropped. The ids are codes
+       with no order, so the names are kept as categories (one-hot encoded in the
+       modelling pipeline). Done with .map(), so the encounter_id index is kept
+       (the notebook's .merge() reset it to 0..n-1).
+    2. Admission type and source: "Not Mapped", "Not Available" and missing
+       (ids with a NULL description) -> "Unknown"; these labels carry no
+       information, so they are treated as missing.
+    3. Admission source: every name containing "Transfer from" -> "Transfer from
+       a healthcare facility", to reduce cardinality (the transfer sources are
+       small and similar).
+    4. Discharge: "Not Mapped" and missing -> "Unknown"; every name containing
+       "expired" or "hospice" -> "Expired/Hospice". These patients cannot be
+       readmitted and can bias the model; they are only grouped here (removing
+       the rows is a separate, optional step).
+    5. medical_specialty and payer_code: missing -> "Unknown". Inferring them is
+       not worth it (weak correlation with the other variables, risk of bias).
+
+    Not done here: grouping discharge names with fewer than 3,000 rows, and
+    medical_specialty / payer_code values under 1% -> "Other". Those thresholds
+    are learned from the data, so they are fitted on the training set later.
+
+    Args:
+        df: DataFrame with the 3 raw _id columns, medical_specialty and
+            payer_code. It is not modified.
+        id_maps: the dict returned by `load_id_maps`.
+
+    Returns:
+        A copy of df (same index) with the 3 _name columns added, the 3 _id
+        columns removed and the rules above applied.
+    """
+    out = df.copy()
+    for id_col, name_col in ADMIN_ID_COLS.items():
+        out[name_col] = out[id_col].map(id_maps[id_col])
+    out = out.drop(columns=list(ADMIN_ID_COLS))
+
+    not_informative = {"Not Mapped": "Unknown", "Not Available": "Unknown"}
+    for col in ["admission_type_name", "admission_source_name"]:
+        out[col] = out[col].replace(not_informative).fillna("Unknown")
+    is_transfer = out["admission_source_name"].str.contains("Transfer from", case=False)
+    out.loc[is_transfer, "admission_source_name"] = "Transfer from a healthcare facility"
+
+    col = "discharge_disposition_name"
+    out[col] = out[col].replace("Not Mapped", "Unknown").fillna("Unknown")
+    is_expired = out[col].str.contains("expired|hospice", case=False)
+    out.loc[is_expired, col] = "Expired/Hospice"
+
+    for col in ["medical_specialty", "payer_code"]:
+        out[col] = out[col].fillna("Unknown")
     return out

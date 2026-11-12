@@ -5,7 +5,9 @@
 or only this file with `python -m tests.test_preprocessing`.
 """
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import pandas as pd
 
@@ -16,6 +18,8 @@ from src.preprocessing import (
     MED_KEEP,
     build_med_features,
     group_icd9,
+    load_id_maps,
+    preprocess_admin,
     preprocess_demographics,
     preprocess_diagnoses,
     preprocess_labs,
@@ -349,6 +353,161 @@ class TestPreprocessMedicationSummary(unittest.TestCase):
         """The DataFrame passed in is left exactly as it was."""
         before = self.df.copy()
         preprocess_medication_summary(self.df)
+        pd.testing.assert_frame_equal(self.df, before)
+
+
+class TestLoadIdMaps(unittest.TestCase):
+    """Checks on `load_id_maps`, with a small file in the same 3-table layout."""
+
+    CSV = (
+        "admission_type_id,description\n"
+        "1,Emergency\n"
+        "6,NULL\n"
+        "8,Not Mapped\n"
+        ",\n"
+        "discharge_disposition_id,description\n"
+        "1,Discharged to home\n"
+        '19,"Expired at home. Medicaid only, hospice."\n'
+        ",\n"
+        "admission_source_id,description\n"
+        "1, Physician Referral\n"
+        "26,Transfer from Hospice\n"
+    )
+
+    def setUp(self):
+        """Write the small CSV to a temporary folder and read it."""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "IDS_mapping.csv"
+            path.write_text(self.CSV)
+            self.maps = load_id_maps(path)
+
+    def test_three_tables(self):
+        """One map per id column, with all its rows."""
+        self.assertEqual(
+            sorted(self.maps),
+            ["admission_source_id", "admission_type_id", "discharge_disposition_id"],
+        )
+        self.assertEqual(self.maps["admission_type_id"].index.tolist(), [1, 6, 8])
+        self.assertEqual(self.maps["discharge_disposition_id"].index.tolist(), [1, 19])
+
+    def test_last_row_of_last_table_is_kept(self):
+        """Admission source 26 (the file's last row) is kept: the notebook lost it."""
+        self.assertEqual(self.maps["admission_source_id"].index.tolist(), [1, 26])
+        self.assertEqual(self.maps["admission_source_id"][26], "Transfer from Hospice")
+
+    def test_descriptions_stripped_and_null_missing(self):
+        """Spaces around descriptions are removed; "NULL" becomes missing."""
+        self.assertEqual(self.maps["admission_source_id"][1], "Physician Referral")
+        self.assertTrue(pd.isna(self.maps["admission_type_id"][6]))
+        self.assertEqual(
+            self.maps["discharge_disposition_id"][19],
+            "Expired at home. Medicaid only, hospice.",
+        )
+
+
+class TestPreprocessAdmin(unittest.TestCase):
+    """Checks on `preprocess_admin`, with a tiny handmade id_maps."""
+
+    def setUp(self):
+        """Build, before each test, tiny maps and five encounters.
+
+        Ids 6 (type) and 18 (discharge) have a missing description, like "NULL"
+        in the real file; id 99 is not in the maps at all.
+        """
+        self.id_maps = {
+            "admission_type_id": pd.Series(
+                {1: "Emergency", 5: "Not Available", 6: None, 8: "Not Mapped"}
+            ),
+            "admission_source_id": pd.Series(
+                {
+                    1: "Physician Referral",
+                    4: "Transfer from a hospital",
+                    7: "Emergency Room",
+                    17: None,
+                    20: "Not Mapped",
+                    26: "Transfer from Hospice",
+                }
+            ),
+            "discharge_disposition_id": pd.Series(
+                {
+                    1: "Discharged to home",
+                    11: "Expired",
+                    13: "Hospice / home",
+                    18: None,
+                    25: "Not Mapped",
+                }
+            ),
+        }
+        self.df = pd.DataFrame(
+            {
+                "admission_type_id": [1, 5, 6, 8, 99],
+                "admission_source_id": [1, 4, 26, 17, 20],
+                "discharge_disposition_id": [1, 11, 13, 18, 25],
+                "medical_specialty": ["Cardiology", None, "Surgery-General", None, "Nephrology"],
+                "payer_code": [None, "MC", None, "BC", "SP"],
+                "race": ["Caucasian"] * 5,  # a column the block must not touch
+            },
+            index=pd.Index([501, 502, 503, 504, 505], name="encounter_id"),
+        )
+
+    def test_admission_type(self):
+        """Mapped names stay; Not Available, NULL, Not Mapped and unknown ids -> Unknown."""
+        out = preprocess_admin(self.df, self.id_maps)
+        self.assertEqual(
+            out["admission_type_name"].tolist(),
+            ["Emergency", "Unknown", "Unknown", "Unknown", "Unknown"],
+        )
+
+    def test_admission_source(self):
+        """Transfer sources grouped (26 included); NULL and Not Mapped -> Unknown."""
+        out = preprocess_admin(self.df, self.id_maps)
+        self.assertEqual(
+            out["admission_source_name"].tolist(),
+            [
+                "Physician Referral",
+                "Transfer from a healthcare facility",
+                "Transfer from a healthcare facility",
+                "Unknown",
+                "Unknown",
+            ],
+        )
+
+    def test_discharge(self):
+        """Expired and Hospice grouped; NULL and Not Mapped -> Unknown."""
+        out = preprocess_admin(self.df, self.id_maps)
+        self.assertEqual(
+            out["discharge_disposition_name"].tolist(),
+            ["Discharged to home", "Expired/Hospice", "Expired/Hospice", "Unknown", "Unknown"],
+        )
+
+    def test_specialty_and_payer_missing_to_unknown(self):
+        """Missing -> Unknown; other values unchanged (no "<1% -> Other" here)."""
+        out = preprocess_admin(self.df, self.id_maps)
+        self.assertEqual(
+            out["medical_specialty"].tolist(),
+            ["Cardiology", "Unknown", "Surgery-General", "Unknown", "Nephrology"],
+        )
+        self.assertEqual(out["payer_code"].tolist(), ["Unknown", "MC", "Unknown", "BC", "SP"])
+
+    def test_index_is_kept(self):
+        """The encounter_id index is kept (the notebook's .merge() lost it)."""
+        out = preprocess_admin(self.df, self.id_maps)
+        self.assertEqual(out.index.tolist(), [501, 502, 503, 504, 505])
+        self.assertEqual(out.index.name, "encounter_id")
+
+    def test_id_columns_replaced_by_names(self):
+        """The 3 _id columns are gone, the 3 _name columns are there, others kept."""
+        out = preprocess_admin(self.df, self.id_maps)
+        for col in ["admission_type_id", "admission_source_id", "discharge_disposition_id"]:
+            self.assertNotIn(col, out.columns)
+        for col in ["admission_type_name", "admission_source_name", "discharge_disposition_name"]:
+            self.assertIn(col, out.columns)
+        self.assertEqual(out["race"].tolist(), ["Caucasian"] * 5)
+
+    def test_input_is_not_modified(self):
+        """The DataFrame passed in is left exactly as it was."""
+        before = self.df.copy()
+        preprocess_admin(self.df, self.id_maps)
         pd.testing.assert_frame_equal(self.df, before)
 
 
