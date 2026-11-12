@@ -4,9 +4,10 @@ This module holds, so far:
 - the medication block: turns the 23 raw drug columns into 4 engineered
   count/flag features and drops the drugs that are too rare to model on their own;
 - the sociodemographic block: race, gender, age and weight;
-- the diagnoses block: ICD-9 codes grouped, number_diagnoses capped.
-The other preprocessing blocks (lab results, admin, ...) will be added here by
-the team.
+- the diagnoses block: ICD-9 codes grouped, number_diagnoses capped;
+- the lab results block: tests not performed labelled "Not measured";
+- the medication summary block: change and diabetesMed recoded to 1/0.
+The other preprocessing blocks (admin, utilization) will be added here by the team.
 
 The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb`
 (Medications section, and the Data Preprocessing part for the other blocks).
@@ -81,6 +82,15 @@ AGE_ORDER = [f"[{i}-{i + 10})" for i in range(0, 100, 10)]
 
 # The 3 diagnosis columns (ICD-9 codes): primary, secondary, additional secondary.
 DIAG_COLS = ["diag_1", "diag_2", "diag_3"]
+
+# The 2 lab result columns; "None" (or missing) means the test was not performed.
+LAB_COLS = ["max_glu_serum", "A1Cresult"]
+
+# The 2 medication summary columns and their 1/0 coding.
+MED_SUMMARY_CODES = {
+    "change": {"Ch": 1, "No": 0},
+    "diabetesMed": {"Yes": 1, "No": 0},
+}
 
 
 def build_med_features(df, drug_cols=DRUG_COLS, med_drop=MED_DROP):
@@ -272,4 +282,70 @@ def preprocess_diagnoses(df):
         out[f"{col}_group"] = out[col].apply(group_icd9)
     out = out.drop(columns=DIAG_COLS)
     out["number_diagnoses"] = out["number_diagnoses"].clip(upper=10)
+    return out
+
+
+def preprocess_labs(df):
+    """Apply the lab results preprocessing block (max_glu_serum, A1Cresult).
+
+    Step: in both columns, "None" and missing values -> "Not measured".
+    "None" means the test was not performed (about 95% of encounters for
+    max_glu_serum and 83% for A1Cresult). It is labelled rather than imputed,
+    because whether a test was ordered may itself be informative. Both columns
+    stay text categories (">200", ">300", "Norm", "Not measured" and ">7", ">8",
+    "Norm", "Not measured"); they are encoded later, in the modelling pipeline.
+
+    Missing values (NaN) are also mapped, as in the notebook, although with
+    `keep_default_na=False` the raw file has none: the absent tests are the
+    string "None".
+
+    Args:
+        df: DataFrame with the raw max_glu_serum and A1Cresult columns.
+            It is not modified.
+
+    Returns:
+        A copy of df (same index) with "None"/missing replaced by "Not measured"
+        in the 2 lab columns.
+    """
+    out = df.copy()
+    for col in LAB_COLS:
+        out[col] = out[col].replace("None", "Not measured").fillna("Not measured")
+    return out
+
+
+def preprocess_medication_summary(df):
+    """Apply the medication summary preprocessing block (change, diabetesMed).
+
+    Step: recode both binary columns to 1/0 so the models can use them directly:
+    change "Ch" -> 1, "No" -> 0 (diabetes medication changed during the
+    encounter); diabetesMed "Yes" -> 1, "No" -> 0 (any diabetes medication
+    prescribed). Both have no missing values in the raw data.
+
+    Any other value raises an error. The notebook's `.map()` would silently turn
+    it into NaN (and needed a separate check cell); here it fails loudly.
+
+    diabetesMed is KEPT for now, although it is identical to n_meds_taken > 0
+    (see the Medications EDA): dropping it is a team decision still pending.
+
+    Args:
+        df: DataFrame with the raw change and diabetesMed columns.
+            It is not modified.
+
+    Returns:
+        A copy of df (same index) with change and diabetesMed as int 1/0.
+
+    Raises:
+        ValueError: if change or diabetesMed holds a value other than the
+            expected ones; the message names the column and the values.
+    """
+    out = df.copy()
+    for col, codes in MED_SUMMARY_CODES.items():
+        unexpected = ~out[col].isin(list(codes))
+        if unexpected.any():
+            bad = sorted(map(str, out.loc[unexpected, col].unique()))
+            raise ValueError(
+                f"preprocess_medication_summary: unexpected values in {col}: {bad}; "
+                f"expected one of {list(codes)}"
+            )
+        out[col] = out[col].map(codes).astype(int)
     return out

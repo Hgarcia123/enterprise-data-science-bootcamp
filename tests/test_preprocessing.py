@@ -18,6 +18,8 @@ from src.preprocessing import (
     group_icd9,
     preprocess_demographics,
     preprocess_diagnoses,
+    preprocess_labs,
+    preprocess_medication_summary,
     preprocess_medications,
 )
 
@@ -253,6 +255,100 @@ class TestPreprocessDiagnoses(unittest.TestCase):
         """The DataFrame passed in is left exactly as it was."""
         before = self.df.copy()
         preprocess_diagnoses(self.df)
+        pd.testing.assert_frame_equal(self.df, before)
+
+
+class TestPreprocessLabs(unittest.TestCase):
+    """Checks on `preprocess_labs`."""
+
+    def setUp(self):
+        """Build, before each test, a tiny table made by hand: five encounters.
+
+        Covers every kind of value: two results, "Norm", "None" (test not
+        performed) and a missing value.
+        """
+        self.df = pd.DataFrame(
+            {
+                "max_glu_serum": [">200", ">300", "Norm", "None", None],
+                "A1Cresult": [">7", ">8", "Norm", "None", None],
+                "age": [1, 2, 3, 4, 5],  # a column the block must not touch
+            },
+            index=pd.Index([301, 302, 303, 304, 305], name="encounter_id"),
+        )
+
+    def test_values_are_right(self):
+        """"None" and missing become "Not measured"; results and "Norm" stay."""
+        out = preprocess_labs(self.df)
+        self.assertEqual(
+            out["max_glu_serum"].tolist(),
+            [">200", ">300", "Norm", "Not measured", "Not measured"],
+        )
+        self.assertEqual(
+            out["A1Cresult"].tolist(), [">7", ">8", "Norm", "Not measured", "Not measured"]
+        )
+
+    def test_other_columns_and_index_unchanged(self):
+        """The index and the other columns are the same as the input's."""
+        out = preprocess_labs(self.df)
+        self.assertEqual(out.index.tolist(), [301, 302, 303, 304, 305])
+        self.assertEqual(out.index.name, "encounter_id")
+        self.assertEqual(out["age"].tolist(), [1, 2, 3, 4, 5])
+        self.assertEqual(list(out.columns), list(self.df.columns))
+
+    def test_input_is_not_modified(self):
+        """The DataFrame passed in is left exactly as it was."""
+        before = self.df.copy()
+        preprocess_labs(self.df)
+        pd.testing.assert_frame_equal(self.df, before)
+
+
+class TestPreprocessMedicationSummary(unittest.TestCase):
+    """Checks on `preprocess_medication_summary`."""
+
+    def setUp(self):
+        """Build, before each test, a tiny table made by hand: four encounters."""
+        self.df = pd.DataFrame(
+            {
+                "change": ["Ch", "No", "Ch", "No"],
+                "diabetesMed": ["Yes", "No", "Yes", "Yes"],
+                "insulin": ["Up", "No", "Steady", "No"],  # must not be touched
+            },
+            index=pd.Index([401, 402, 403, 404], name="encounter_id"),
+        )
+
+    def test_values_are_right(self):
+        """Ch/Yes -> 1 and No -> 0, as whole numbers."""
+        out = preprocess_medication_summary(self.df)
+        self.assertEqual(out["change"].tolist(), [1, 0, 1, 0])
+        self.assertEqual(out["diabetesMed"].tolist(), [1, 0, 1, 1])
+        self.assertTrue(pd.api.types.is_integer_dtype(out["change"]))
+        self.assertTrue(pd.api.types.is_integer_dtype(out["diabetesMed"]))
+
+    def test_unexpected_value_raises_valueerror(self):
+        """A value other than Ch/No or Yes/No raises a ValueError that names it."""
+        self.df.loc[402, "diabetesMed"] = "Maybe"
+        with self.assertRaises(ValueError) as ctx:
+            preprocess_medication_summary(self.df)
+        self.assertIn("diabetesMed", str(ctx.exception))
+        self.assertIn("Maybe", str(ctx.exception))
+
+    def test_missing_value_raises_valueerror(self):
+        """A missing value raises too, instead of staying NaN."""
+        self.df.loc[403, "change"] = None
+        with self.assertRaises(ValueError):
+            preprocess_medication_summary(self.df)
+
+    def test_index_and_other_columns_unchanged(self):
+        """The index and the other columns are the same as the input's."""
+        out = preprocess_medication_summary(self.df)
+        self.assertEqual(out.index.tolist(), [401, 402, 403, 404])
+        self.assertEqual(out.index.name, "encounter_id")
+        self.assertEqual(out["insulin"].tolist(), ["Up", "No", "Steady", "No"])
+
+    def test_input_is_not_modified(self):
+        """The DataFrame passed in is left exactly as it was."""
+        before = self.df.copy()
+        preprocess_medication_summary(self.df)
         pd.testing.assert_frame_equal(self.df, before)
 
 
