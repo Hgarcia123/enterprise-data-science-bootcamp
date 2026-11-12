@@ -16,6 +16,7 @@ from src.preprocessing import (
     DRUG_COLS,
     MED_DROP,
     MED_KEEP,
+    add_utilization_features,
     build_med_features,
     group_icd9,
     load_id_maps,
@@ -508,6 +509,75 @@ class TestPreprocessAdmin(unittest.TestCase):
         """The DataFrame passed in is left exactly as it was."""
         before = self.df.copy()
         preprocess_admin(self.df, self.id_maps)
+        pd.testing.assert_frame_equal(self.df, before)
+
+
+class TestAddUtilizationFeatures(unittest.TestCase):
+    """Checks on `add_utilization_features`."""
+
+    def setUp(self):
+        """Build, before each test, a tiny table made by hand: four encounters."""
+        self.df = pd.DataFrame(
+            {
+                "number_outpatient": [0, 2, 1, 0],
+                "number_emergency": [0, 1, 0, 3],
+                "number_inpatient": [0, 3, 1, 0],
+                "num_lab_procedures": [10, 45, 7, 60],
+                "time_in_hospital": [1, 3, 2, 4],
+                "race": ["Caucasian"] * 4,  # a column the block must not touch
+            },
+            index=pd.Index([601, 602, 603, 604], name="encounter_id"),
+        )
+
+    def test_total_prior_visits(self):
+        """outpatient + emergency + inpatient, as whole numbers."""
+        out = add_utilization_features(self.df)
+        self.assertEqual(out["total_prior_visits"].tolist(), [0, 6, 2, 3])
+        self.assertTrue(pd.api.types.is_integer_dtype(out["total_prior_visits"]))
+
+    def test_lab_procedures_per_day(self):
+        """num_lab_procedures / time_in_hospital, as decimals."""
+        out = add_utilization_features(self.df)
+        self.assertEqual(out["lab_procedures_per_day"].tolist(), [10.0, 15.0, 3.5, 15.0])
+        self.assertTrue(pd.api.types.is_float_dtype(out["lab_procedures_per_day"]))
+
+    def test_is_prior_inpatient(self):
+        """0 when number_inpatient is 0, 1 when it is 1 or more."""
+        out = add_utilization_features(self.df)
+        self.assertEqual(out["is_prior_inpatient"].tolist(), [0, 1, 1, 0])
+        self.assertTrue(pd.api.types.is_integer_dtype(out["is_prior_inpatient"]))
+
+    def test_zero_days_raises_valueerror(self):
+        """time_in_hospital = 0 raises instead of dividing by zero."""
+        self.df.loc[602, "time_in_hospital"] = 0
+        with self.assertRaises(ValueError):
+            add_utilization_features(self.df)
+
+    def test_missing_days_raises_valueerror(self):
+        """A missing time_in_hospital raises too."""
+        self.df["time_in_hospital"] = [1, None, 2, 4]
+        with self.assertRaises(ValueError):
+            add_utilization_features(self.df)
+
+    def test_missing_column_raises_keyerror(self):
+        """A missing input column raises a KeyError that names it."""
+        df = self.df.drop(columns=["number_emergency"])
+        with self.assertRaises(KeyError) as ctx:
+            add_utilization_features(df)
+        self.assertIn("number_emergency", str(ctx.exception))
+
+    def test_index_and_other_columns_kept(self):
+        """The index and the other columns are the same as the input's."""
+        out = add_utilization_features(self.df)
+        self.assertEqual(out.index.tolist(), [601, 602, 603, 604])
+        self.assertEqual(out.index.name, "encounter_id")
+        self.assertEqual(out["race"].tolist(), ["Caucasian"] * 4)
+        self.assertEqual(out["number_inpatient"].tolist(), [0, 3, 1, 0])
+
+    def test_input_is_not_modified(self):
+        """The DataFrame passed in is left exactly as it was."""
+        before = self.df.copy()
+        add_utilization_features(self.df)
         pd.testing.assert_frame_equal(self.df, before)
 
 

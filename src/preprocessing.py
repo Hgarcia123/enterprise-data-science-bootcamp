@@ -8,8 +8,10 @@ This module holds, so far:
 - the lab results block: tests not performed labelled "Not measured";
 - the medication summary block: change and diabetesMed recoded to 1/0;
 - the administrative block: admission/discharge ids decoded with IDS_mapping.csv
-  and grouped (fixed rules only; the learned groupings come later).
-The utilization block will be added here next.
+  and grouped (fixed rules only; the learned groupings come later);
+- the utilization block: 3 features from the visit counts and the stay.
+Learned steps (caps, "<1% -> Other", scaling) are not here yet: they must be
+fitted on the training set only.
 
 The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb`
 (Medications section, and the Data Preprocessing part for the other blocks).
@@ -453,4 +455,64 @@ def preprocess_admin(df, id_maps):
 
     for col in ["medical_specialty", "payer_code"]:
         out[col] = out[col].fillna("Unknown")
+    return out
+
+
+# Inputs of the utilization features.
+UTILIZATION_INPUT_COLS = [
+    "number_outpatient",
+    "number_emergency",
+    "number_inpatient",
+    "num_lab_procedures",
+    "time_in_hospital",
+]
+
+
+def add_utilization_features(df):
+    """Add the 3 utilization features (utilization history and current stay).
+
+    Features:
+    - total_prior_visits = number_outpatient + number_emergency + number_inpatient
+      (int): the patient's whole utilization history in one number.
+    - lab_procedures_per_day = num_lab_procedures / time_in_hospital (float):
+      how many lab procedures per day of stay, a sign of how severe the
+      patient's condition is.
+    - is_prior_inpatient = 1 if number_inpatient > 0, else 0 (int): whether the
+      patient was admitted to hospital before, again a sign of severity.
+
+    Order in the pipeline: as in the notebook, these features are built AFTER
+    the 99th-percentile caps on number_outpatient, number_emergency,
+    number_inpatient, num_lab_procedures and num_medications. So
+    total_prior_visits sums capped counts and lab_procedures_per_day uses the
+    capped num_lab_procedures. The caps themselves are a learned step (fitted on
+    the training set) and are not applied here; neither is scaling.
+
+    Args:
+        df: DataFrame with the columns in UTILIZATION_INPUT_COLS. It is not
+            modified.
+
+    Returns:
+        A copy of df (same index) with the 3 features added.
+
+    Raises:
+        KeyError: if any input column is missing; the message names them.
+        ValueError: if time_in_hospital has a 0 or a missing value (no silent
+            division by zero).
+    """
+    missing = [col for col in UTILIZATION_INPUT_COLS if col not in df.columns]
+    if missing:
+        raise KeyError(f"add_utilization_features: missing columns {missing}")
+    days = df["time_in_hospital"]
+    bad_days = days.isna() | (days == 0)
+    if bad_days.any():
+        raise ValueError(
+            f"add_utilization_features: time_in_hospital is 0 or missing in "
+            f"{int(bad_days.sum())} rows (index {df.index[bad_days][:5].tolist()} ...)"
+        )
+
+    out = df.copy()
+    visits = ["number_outpatient", "number_emergency", "number_inpatient"]
+    out["total_prior_visits"] = out[visits].sum(axis=1).astype(int)
+    out["lab_procedures_per_day"] = out["num_lab_procedures"] / out["time_in_hospital"]
+    out["is_prior_inpatient"] = (out["number_inpatient"] > 0).astype(int)
     return out
