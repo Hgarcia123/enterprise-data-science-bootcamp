@@ -15,7 +15,9 @@ from src.preprocessing import (
     MED_DROP,
     MED_KEEP,
     build_med_features,
+    group_icd9,
     preprocess_demographics,
+    preprocess_diagnoses,
     preprocess_medications,
 )
 
@@ -165,6 +167,93 @@ class TestPreprocessDemographics(unittest.TestCase):
         self.df["age"] = [0, 9, 5, 0, 7]
         with self.assertRaises(ValueError):
             preprocess_demographics(self.df)
+
+
+class TestPreprocessDiagnoses(unittest.TestCase):
+    """Checks on `group_icd9` and `preprocess_diagnoses`."""
+
+    # ICD-9 code -> expected group, including the edges of each range
+    CASES = {
+        "250.83": "Diabetes",
+        "428": "Circulatory",
+        "785": "Circulatory",
+        "786": "Respiratory",
+        "787": "Digestive",
+        "788": "Genitourinary",
+        "140": "Neoplasms",
+        "239": "Neoplasms",
+        "240": "Other",
+        "800": "Injury",
+        "999": "Injury",
+        "710": "Musculoskeletal",
+        "739": "Musculoskeletal",
+        "V57": "Other",
+        "E909": "Other",
+    }
+
+    def setUp(self):
+        """Build, before each test, a tiny table made by hand: four encounters.
+
+        Missing codes are NaN, as after reading the CSV with na_values="?".
+        """
+        self.df = pd.DataFrame(
+            {
+                "diag_1": ["250.83", "428", "V57", "800"],
+                "diag_2": ["786", None, "140", "E909"],
+                "diag_3": ["240", "788", "739", None],
+                "number_diagnoses": [9, 16, 10, 1],
+                "race": ["Caucasian"] * 4,  # a column the block must not touch
+            },
+            index=pd.Index([201, 202, 203, 204], name="encounter_id"),
+        )
+
+    def test_group_icd9_known_codes(self):
+        """Each code lands in its Strack et al. group, edges included."""
+        for code, group in self.CASES.items():
+            with self.subTest(code=code):
+                self.assertEqual(group_icd9(code), group)
+
+    def test_group_icd9_missing(self):
+        """A missing code (None or NaN) becomes "Missing"."""
+        self.assertEqual(group_icd9(None), "Missing")
+        self.assertEqual(group_icd9(float("nan")), "Missing")
+
+    def test_group_columns_are_right(self):
+        """The 3 _group columns match the hand-computed groups."""
+        out = preprocess_diagnoses(self.df)
+        self.assertEqual(
+            out["diag_1_group"].tolist(), ["Diabetes", "Circulatory", "Other", "Injury"]
+        )
+        self.assertEqual(
+            out["diag_2_group"].tolist(), ["Respiratory", "Missing", "Neoplasms", "Other"]
+        )
+        self.assertEqual(
+            out["diag_3_group"].tolist(), ["Other", "Genitourinary", "Musculoskeletal", "Missing"]
+        )
+
+    def test_number_diagnoses_capped_at_10(self):
+        """9 stays 9, 16 becomes 10, 10 stays 10, 1 stays 1."""
+        out = preprocess_diagnoses(self.df)
+        self.assertEqual(out["number_diagnoses"].tolist(), [9, 10, 10, 1])
+
+    def test_raw_diag_columns_are_gone(self):
+        """diag_1, diag_2, diag_3 are dropped; the other columns stay."""
+        out = preprocess_diagnoses(self.df)
+        for col in ["diag_1", "diag_2", "diag_3"]:
+            self.assertNotIn(col, out.columns)
+        self.assertEqual(out["race"].tolist(), ["Caucasian"] * 4)
+
+    def test_index_unchanged(self):
+        """The index (encounter_id) is the same as the input's."""
+        out = preprocess_diagnoses(self.df)
+        self.assertEqual(out.index.tolist(), [201, 202, 203, 204])
+        self.assertEqual(out.index.name, "encounter_id")
+
+    def test_input_is_not_modified(self):
+        """The DataFrame passed in is left exactly as it was."""
+        before = self.df.copy()
+        preprocess_diagnoses(self.df)
+        pd.testing.assert_frame_equal(self.df, before)
 
 
 if __name__ == "__main__":
