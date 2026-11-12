@@ -22,12 +22,14 @@ from src.preprocessing import (
     build_med_features,
     group_icd9,
     load_id_maps,
+    make_target,
     preprocess_admin,
     preprocess_demographics,
     preprocess_diagnoses,
     preprocess_labs,
     preprocess_medication_summary,
     preprocess_medications,
+    split_by_patient,
 )
 
 FEATURES = ["n_meds_taken", "n_dose_changes", "n_other_meds", "on_insulin_only"]
@@ -716,6 +718,93 @@ class TestBuildCleanTable(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             build_clean_table(raw, self.id_maps)
         self.assertIn("804", str(ctx.exception))
+
+
+
+class TestMakeTarget(unittest.TestCase):
+    """Checks on `make_target`."""
+
+    def test_mapping(self):
+        """<30 -> 1; >30 and NO -> 0; index and name kept."""
+        y = pd.Series(["<30", ">30", "NO", "<30"], index=pd.Index([4, 3, 2, 1], name="encounter_id"),
+                      name="readmitted")
+        out = make_target(y)
+        pd.testing.assert_series_equal(
+            out, pd.Series([1, 0, 0, 1], index=y.index, name="readmitted").astype(int)
+        )
+
+    def test_unexpected_value_raises(self):
+        """A value outside NO / >30 / <30 raises ValueError naming it."""
+        with self.assertRaises(ValueError) as ctx:
+            make_target(pd.Series(["NO", "<31"]))
+        self.assertIn("<31", str(ctx.exception))
+
+    def test_missing_raises(self):
+        """A missing value raises ValueError."""
+        with self.assertRaises(ValueError):
+            make_target(pd.Series(["NO", None]))
+
+
+class TestSplitByPatient(unittest.TestCase):
+    """Checks on `split_by_patient`, with 10 patients and repeated encounters."""
+
+    def setUp(self):
+        """Build, before each test, 20 encounters of 10 patients (1 to 4 each).
+
+        The index is not sorted, to check that alignment is by encounter_id.
+        """
+        patients = [1, 1, 1, 2, 3, 3, 4, 5, 5, 5, 5, 6, 7, 7, 8, 9, 9, 10, 10, 2]
+        index = pd.Index([900 - i * 7 for i in range(20)], name="encounter_id")
+        self.X = pd.DataFrame(
+            {"patient_nbr": patients, "age": list(range(20))}, index=index
+        )
+        self.y = pd.Series([i % 3 == 0 for i in range(20)], index=index, name="readmitted").astype(int)
+        self.groups = self.X["patient_nbr"]
+
+    def split(self, **kwargs):
+        return split_by_patient(self.X, self.y, self.groups, **kwargs)
+
+    def test_no_patient_in_two_sets(self):
+        """No patient_nbr appears in more than one set."""
+        X_tr, X_va, X_te, *_ = self.split()
+        tr, va, te = (set(x["patient_nbr"]) for x in (X_tr, X_va, X_te))
+        self.assertFalse(tr & va)
+        self.assertFalse(tr & te)
+        self.assertFalse(va & te)
+        self.assertTrue(tr and va and te)  # no set is empty
+
+    def test_every_row_once(self):
+        """Every encounter is in exactly one set."""
+        X_tr, X_va, X_te, *_ = self.split()
+        all_ids = list(X_tr.index) + list(X_va.index) + list(X_te.index)
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+        self.assertEqual(set(all_ids), set(self.X.index))
+
+    def test_x_y_aligned(self):
+        """Each y has the same index as its X, and the values come from the right rows."""
+        X_tr, X_va, X_te, y_tr, y_va, y_te = self.split()
+        for X_part, y_part in [(X_tr, y_tr), (X_va, y_va), (X_te, y_te)]:
+            pd.testing.assert_index_equal(X_part.index, y_part.index)
+            pd.testing.assert_series_equal(y_part, self.y.loc[X_part.index])
+            pd.testing.assert_frame_equal(X_part, self.X.loc[X_part.index])
+
+    def test_same_seed_same_split(self):
+        """The same random_state gives the same split."""
+        first, second = self.split(random_state=7), self.split(random_state=7)
+        for a, b in zip(first, second):
+            pd.testing.assert_index_equal(a.index, b.index)
+
+    def test_input_unchanged(self):
+        """X and y are not modified."""
+        X_before, y_before = self.X.copy(), self.y.copy()
+        self.split()
+        pd.testing.assert_frame_equal(self.X, X_before)
+        pd.testing.assert_series_equal(self.y, y_before)
+
+    def test_misaligned_raises(self):
+        """y with a different index raises ValueError."""
+        with self.assertRaises(ValueError):
+            split_by_patient(self.X, self.y.iloc[::-1], self.groups)
 
 
 if __name__ == "__main__":

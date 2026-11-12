@@ -11,6 +11,8 @@ This module holds, so far:
   and grouped (fixed rules only; the learned groupings come later);
 - the utilization block: 3 features from the visit counts and the stay;
 - build_clean_table: the fixed-rule blocks in order, giving one table X and y.
+- make_target and split_by_patient: the 0/1 target and the train / validation /
+  test split grouped by patient.
 Learned steps (caps, "<1% -> Other", scaling) are not here yet: they must be
 fitted on the training set only.
 
@@ -18,7 +20,9 @@ The constants and the logic come from `notebooks/diabetes_predictive_model.ipynb
 (Medications section, and the Data Preprocessing part for the other blocks).
 """
 
+import numpy as np
 import pandas as pd
+from sklearn.model_selection import GroupShuffleSplit
 
 # The 23 drug columns, in the order they appear in the raw file
 # (metformin -> metformin-pioglitazone). Each holds "No", "Steady", "Up" or "Down".
@@ -112,6 +116,9 @@ EXPIRED_HOSPICE_IDS = (11, 13, 14, 19, 20, 21)
 
 # The target column of the raw file: "NO", ">30" or "<30".
 TARGET_COL = "readmitted"
+
+# The readmitted value that is the positive class (early readmission).
+POSITIVE_CLASS = "<30"
 
 
 def build_med_features(df, drug_cols=DRUG_COLS, med_drop=MED_DROP):
@@ -589,3 +596,88 @@ def build_clean_table(df_raw, id_maps, drop_expired=True):
     if not X.index.equals(y.index):
         raise ValueError("build_clean_table: X and y do not have the same index")
     return X, y
+
+
+def make_target(y):
+    """Turn the 3-class readmitted column into the binary target: 1 = "<30", else 0.
+
+    The business question (problem statement) is readmission within 30 days, so
+    "<30" is the positive class (1). ">30" (readmitted later) and "NO" (not
+    readmitted) both count as 0: a readmission after 30 days is not what the
+    hospital wants to prevent here.
+
+    Args:
+        y: Series with the raw readmitted values "NO", ">30", "<30". It is not
+            modified.
+
+    Returns:
+        A Series of int 0/1 with the same index and name as y.
+
+    Raises:
+        ValueError: if y holds a missing value or a value other than the three
+            above; the message names the values.
+    """
+    expected = ["NO", ">30", POSITIVE_CLASS]
+    unexpected = ~y.isin(expected)
+    if unexpected.any():
+        bad = sorted(map(str, y[unexpected].unique()))
+        raise ValueError(f"make_target: unexpected values {bad}; expected one of {expected}")
+    return (y == POSITIVE_CLASS).astype(int)
+
+
+def split_by_patient(X, y, groups, val_size=0.2, test_size=0.2, random_state=42):
+    """Split X and y into train / validation / test, grouped by patient.
+
+    Why grouped: the data has 71,518 patients for 101,766 encounters, so many
+    patients have several encounters. If the same patient were in train and in
+    test, the model could learn that patient's history and look better on test
+    than it would on new patients (leakage). So every patient's encounters go to
+    exactly one set.
+
+    How: scikit-learn's GroupShuffleSplit, in two passes. First the test set is
+    taken off (test_size of the patients); then the validation set is taken from
+    the rest, with its share adjusted to val_size / (1 - test_size), so the final
+    proportions are about (1 - val_size - test_size) / val_size / test_size. The
+    shares are of patients, so the shares of rows are close but not exact.
+
+    The proportions are a team decision still pending; the default is 60/20/20.
+
+    Args:
+        X: feature table (index encounter_id). It is not modified.
+        y: target Series with the same index as X.
+        groups: the patient of each row (e.g. X["patient_nbr"]), a Series with
+            the same index as X.
+        val_size: share of patients in the validation set (default 0.2).
+        test_size: share of patients in the test set (default 0.2).
+        random_state: seed for both passes; the same seed gives the same split.
+
+    Returns:
+        X_train, X_val, X_test, y_train, y_val, y_test: rows of X and y, each
+        keeping its index, in the order of X.
+
+    Raises:
+        ValueError: if y or groups do not have the same index as X, or the sizes
+            are not between 0 and 1 with val_size + test_size < 1.
+    """
+    if not (y.index.equals(X.index) and groups.index.equals(X.index)):
+        raise ValueError("split_by_patient: X, y and groups must have the same index")
+    if not (0 < val_size < 1 and 0 < test_size < 1 and val_size + test_size < 1):
+        raise ValueError(
+            f"split_by_patient: need 0 < val_size, test_size and val_size + test_size < 1, "
+            f"got {val_size}, {test_size}"
+        )
+
+    rows = np.arange(len(X))
+    outer = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
+    rest, test = next(outer.split(rows, groups=groups))
+    inner = GroupShuffleSplit(
+        n_splits=1, test_size=val_size / (1 - test_size), random_state=random_state
+    )
+    train, val = next(inner.split(rest, groups=groups.iloc[rest]))
+    train, val = rest[train], rest[val]
+    train, val, test = np.sort(train), np.sort(val), np.sort(test)
+
+    return (
+        X.iloc[train], X.iloc[val], X.iloc[test],
+        y.iloc[train], y.iloc[val], y.iloc[test],
+    )
