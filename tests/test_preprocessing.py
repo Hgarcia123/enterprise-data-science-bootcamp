@@ -16,7 +16,9 @@ from src.preprocessing import (
     DRUG_COLS,
     MED_DROP,
     MED_KEEP,
+    EXPIRED_HOSPICE_IDS,
     add_utilization_features,
+    build_clean_table,
     build_med_features,
     group_icd9,
     load_id_maps,
@@ -579,6 +581,141 @@ class TestAddUtilizationFeatures(unittest.TestCase):
         before = self.df.copy()
         add_utilization_features(self.df)
         pd.testing.assert_frame_equal(self.df, before)
+
+
+
+class TestBuildCleanTable(unittest.TestCase):
+    """Checks on `build_clean_table`, with five handmade raw encounters."""
+
+    def setUp(self):
+        """Build, before each test, tiny maps and five raw rows covering every block.
+
+        Encounters 803 (discharge 11, expired) and 805 (discharge 13, hospice) are
+        the ones drop_expired removes. The index is not sorted, to check that X
+        and y stay aligned by encounter_id and not by position.
+        """
+        self.id_maps = {
+            "admission_type_id": pd.Series({1: "Emergency", 6: None}),
+            "admission_source_id": pd.Series({7: "Emergency Room", 4: "Transfer from a hospital"}),
+            "discharge_disposition_id": pd.Series(
+                {1: "Discharged to home", 11: "Expired", 13: "Hospice / home", 18: None}
+            ),
+        }
+        n = 5
+        raw = {
+            "patient_nbr": [10, 20, 20, 30, 40],
+            "race": ["Caucasian", None, "AfricanAmerican", "Asian", "Other"],
+            "gender": ["Female", "Male", "Male", "Unknown/Invalid", "Female"],
+            "age": ["[70-80)", "[50-60)", "[50-60)", "[0-10)", "[90-100)"],
+            "weight": [None, "[75-100)", None, None, None],
+            "admission_type_id": [1, 6, 1, 1, 6],
+            "discharge_disposition_id": [1, 11, 18, 1, 13],
+            "admission_source_id": [7, 4, 7, 7, 4],
+            "time_in_hospital": [3, 5, 1, 2, 8],
+            "payer_code": ["MC", None, "BC", None, "SP"],
+            "medical_specialty": [None, "Cardiology", None, "Surgery-General", None],
+            "num_lab_procedures": [40, 60, 10, 30, 70],
+            "num_procedures": [0, 1, 2, 0, 3],
+            "num_medications": [10, 20, 5, 8, 15],
+            "number_outpatient": [0, 1, 0, 2, 0],
+            "number_emergency": [0, 0, 1, 0, 0],
+            "number_inpatient": [1, 0, 0, 3, 0],
+            "diag_1": ["428", "250.83", "V57", None, "E888"],
+            "diag_2": ["250", "786", "414", "715", "996"],
+            "diag_3": [None, "401", "250.01", "599", "162"],
+            "number_diagnoses": [9, 16, 5, 10, 7],
+            "max_glu_serum": ["None", ">200", "None", "Norm", "None"],
+            "A1Cresult": [">8", "None", "None", "Norm", ">7"],
+            "change": ["Ch", "No", "No", "Ch", "No"],
+            "diabetesMed": ["Yes", "Yes", "No", "Yes", "Yes"],
+            "readmitted": ["<30", "NO", ">30", "<30", "NO"],
+        }
+        for drug in DRUG_COLS:
+            raw[drug] = ["No"] * n
+        raw["insulin"] = ["Up", "Steady", "No", "Down", "Steady"]
+        raw["metformin"] = ["Steady", "No", "No", "No", "No"]
+        raw["acarbose"] = ["No", "No", "No", "Steady", "No"]  # a MED_DROP drug
+        self.raw = pd.DataFrame(raw, index=pd.Index([804, 803, 801, 802, 805], name="encounter_id"))
+
+    def test_expired_ids_constant(self):
+        """The 6 expired/hospice discharge ids."""
+        self.assertEqual(EXPIRED_HOSPICE_IDS, (11, 13, 14, 19, 20, 21))
+
+    def test_drop_expired_true(self):
+        """Discharge 11 and 13 removed from X and y together; 3 rows left."""
+        X, y = build_clean_table(self.raw, self.id_maps)
+        self.assertEqual(len(X), 3)
+        self.assertEqual(sorted(X.index), [801, 802, 804])
+        self.assertTrue(X.index.equals(y.index))
+        self.assertNotIn("Expired/Hospice", set(X["discharge_disposition_name"]))
+        self.assertEqual(y.loc[804], "<30")
+        self.assertEqual(y.loc[801], ">30")
+
+    def test_drop_expired_false(self):
+        """All 5 rows kept; expired/hospice are only grouped, as in the notebook."""
+        X, y = build_clean_table(self.raw, self.id_maps, drop_expired=False)
+        self.assertEqual(len(X), 5)
+        self.assertEqual(len(y), 5)
+        self.assertEqual(X.loc[803, "discharge_disposition_name"], "Expired/Hospice")
+        self.assertEqual(X.loc[805, "discharge_disposition_name"], "Expired/Hospice")
+
+    def test_index_kept_and_y_unchanged(self):
+        """X and y keep the raw encounter_id order; y holds the raw 3-class values."""
+        X, y = build_clean_table(self.raw, self.id_maps, drop_expired=False)
+        pd.testing.assert_index_equal(X.index, self.raw.index)
+        pd.testing.assert_index_equal(y.index, self.raw.index)
+        pd.testing.assert_series_equal(y, self.raw["readmitted"])
+
+    def test_columns_removed(self):
+        """readmitted, the _id, raw diag, weight and MED_DROP columns are gone."""
+        X, _ = build_clean_table(self.raw, self.id_maps)
+        gone = (
+            ["readmitted", "weight", "diag_1", "diag_2", "diag_3"]
+            + ["admission_type_id", "admission_source_id", "discharge_disposition_id"]
+            + MED_DROP
+        )
+        for col in gone:
+            self.assertNotIn(col, X.columns, col)
+        for col in MED_KEEP + FEATURES + ["patient_nbr", "weight_recorded", "diag_1_group"]:
+            self.assertIn(col, X.columns, col)
+
+    def test_every_block_applied(self):
+        """One value from each block, on encounter 804 and 802."""
+        X, _ = build_clean_table(self.raw, self.id_maps)
+        row = X.loc[804]
+        self.assertEqual(row["age"], 7)  # demographics
+        self.assertEqual(row["weight_recorded"], 0)
+        self.assertEqual(row["diag_1_group"], "Circulatory")  # diagnoses
+        self.assertEqual(row["diag_3_group"], "Missing")
+        self.assertEqual(row["max_glu_serum"], "Not measured")  # labs
+        self.assertEqual(row["change"], 1)  # medication summary
+        self.assertEqual(row["n_meds_taken"], 2)  # medications
+        self.assertEqual(row["n_dose_changes"], 1)
+        self.assertEqual(row["admission_type_name"], "Emergency")  # admin
+        self.assertEqual(row["medical_specialty"], "Unknown")
+        self.assertEqual(X.loc[802, "gender"], "Unknown")
+        self.assertEqual(X.loc[802, "n_other_meds"], 1)
+        self.assertEqual(X.loc[802, "number_diagnoses"], 10)
+        self.assertEqual(X.loc[801, "discharge_disposition_name"], "Unknown")
+
+    def test_no_utilization_features(self):
+        """Utilization features come after the caps (Step A5), not here."""
+        X, _ = build_clean_table(self.raw, self.id_maps)
+        for col in ["total_prior_visits", "lab_procedures_per_day", "is_prior_inpatient"]:
+            self.assertNotIn(col, X.columns)
+
+    def test_input_unchanged(self):
+        """The raw table is not modified."""
+        before = self.raw.copy()
+        build_clean_table(self.raw, self.id_maps)
+        pd.testing.assert_frame_equal(self.raw, before)
+
+    def test_duplicated_index_raises(self):
+        """A repeated encounter_id raises ValueError naming it."""
+        raw = self.raw.rename(index={803: 804})
+        with self.assertRaises(ValueError) as ctx:
+            build_clean_table(raw, self.id_maps)
+        self.assertIn("804", str(ctx.exception))
 
 
 if __name__ == "__main__":

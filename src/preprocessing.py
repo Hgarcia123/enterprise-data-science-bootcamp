@@ -9,7 +9,8 @@ This module holds, so far:
 - the medication summary block: change and diabetesMed recoded to 1/0;
 - the administrative block: admission/discharge ids decoded with IDS_mapping.csv
   and grouped (fixed rules only; the learned groupings come later);
-- the utilization block: 3 features from the visit counts and the stay.
+- the utilization block: 3 features from the visit counts and the stay;
+- build_clean_table: the fixed-rule blocks in order, giving one table X and y.
 Learned steps (caps, "<1% -> Other", scaling) are not here yet: they must be
 fitted on the training set only.
 
@@ -102,6 +103,15 @@ ADMIN_ID_COLS = {
     "admission_source_id": "admission_source_name",
     "discharge_disposition_id": "discharge_disposition_name",
 }
+
+# Raw discharge_disposition_id values for patients who died (11, 19, 20, 21: "Expired...")
+# or went to hospice (13, 14). They cannot be readmitted, so keeping them would add
+# encounters that are "not readmitted" for a reason unrelated to the care given and
+# bias the model. Removing them is the default (team decision pending).
+EXPIRED_HOSPICE_IDS = (11, 13, 14, 19, 20, 21)
+
+# The target column of the raw file: "NO", ">30" or "<30".
+TARGET_COL = "readmitted"
 
 
 def build_med_features(df, drug_cols=DRUG_COLS, med_drop=MED_DROP):
@@ -516,3 +526,66 @@ def add_utilization_features(df):
     out["lab_procedures_per_day"] = out["num_lab_procedures"] / out["time_in_hospital"]
     out["is_prior_inpatient"] = (out["number_inpatient"] > 0).astype(int)
     return out
+
+
+def build_clean_table(df_raw, id_maps, drop_expired=True):
+    """Apply every fixed-rule block and return one table X plus the target y.
+
+    Order:
+    1. Split off the target: y = the raw readmitted column, unchanged (3 classes
+       "NO", ">30", "<30", as in the notebook; not binarised here). It is removed
+       from X.
+    2. If drop_expired: remove the encounters whose RAW discharge_disposition_id
+       is in EXPIRED_HOSPICE_IDS, from X and y together. Done first, on the raw
+       ids (not the decoded names), so that every later step, and every learned
+       step fitted afterwards, only sees patients who could be readmitted.
+    3. The block functions, in this order: preprocess_demographics,
+       preprocess_diagnoses, preprocess_labs, preprocess_medication_summary,
+       preprocess_medications, preprocess_admin.
+
+    Not done here (all Step A5, fitted on the training set only): the
+    99th-percentile caps, "<1% -> Other" for medical_specialty and payer_code,
+    the discharge grouping of names with fewer than 3,000 rows, and scaling.
+    The utilization features (`add_utilization_features`) are not added either,
+    because in the notebook they are built AFTER the caps.
+
+    patient_nbr stays in X: it is NOT a feature, it is kept only to split the
+    data by patient (Step A5/B3) so that one patient is never in two sets. It
+    must be removed before modelling.
+
+    Args:
+        df_raw: the raw diabetic_data table as loaded in the notebook
+            (na_values="?", keep_default_na=False), indexed by encounter_id.
+            It is not modified.
+        id_maps: the dict returned by `load_id_maps`.
+        drop_expired: remove the expired/hospice encounters (default True).
+
+    Returns:
+        (X, y): X is one DataFrame indexed by encounter_id with every block
+        applied; y is the readmitted Series with the same index.
+
+    Raises:
+        ValueError: if the index of df_raw has duplicates, or if X and y end up
+            with different indexes.
+    """
+    if not df_raw.index.is_unique:
+        dups = df_raw.index[df_raw.index.duplicated()].unique()[:5].tolist()
+        raise ValueError(f"build_clean_table: duplicated index values, e.g. {dups}")
+
+    X = df_raw.drop(columns=TARGET_COL)
+    y = df_raw[TARGET_COL].copy()
+
+    if drop_expired:
+        keep = ~X["discharge_disposition_id"].isin(EXPIRED_HOSPICE_IDS)
+        X, y = X[keep], y[keep]
+
+    X = preprocess_demographics(X)
+    X = preprocess_diagnoses(X)
+    X = preprocess_labs(X)
+    X = preprocess_medication_summary(X)
+    X = preprocess_medications(X)
+    X = preprocess_admin(X, id_maps)
+
+    if not X.index.equals(y.index):
+        raise ValueError("build_clean_table: X and y do not have the same index")
+    return X, y
